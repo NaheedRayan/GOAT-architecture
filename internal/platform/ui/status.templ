@@ -1,0 +1,34 @@
+package ui
+
+// StatusBadge renders an order status as a coloured pill.
+templ StatusBadge(status string) {
+	<span class={ "badge " + statusClass(status) }>{ StatusLabel(status) }</span>
+}
+
+func StatusLabel(status string) string {
+	switch status {
+	case "awaiting_payment":
+		return "Awaiting payment"
+	case "paid":
+		return "Paid"
+	case "fulfilling":
+		return "Preparing"
+	case "shipped":
+		return "Shipped"
+	case "cancelled":
+		return "Cancelled"
+	}
+	return status
+}
+
+func statusClass(status string) string {
+	switch status {
+	case "awaiting_payment":
+		return "bg-amber-100 text-amber-800"
+	case "paid", "fulfilling":
+		return "bg-sky-100 text-sky-800"
+	case "shipped":
+		return "bg-emerald-100 text-emerald-800"
+	}
+	return "bg-stone-200 text-stone-600"
+}

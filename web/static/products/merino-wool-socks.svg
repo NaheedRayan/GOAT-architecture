@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" role="img">
+<defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e9d5ff"/><stop offset="1" stop-color="#c084fc"/></linearGradient>
+<linearGradient id="shade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".35"/><stop offset="1" stop-color="#000" stop-opacity=".12"/></linearGradient></defs>
+<rect width="600" height="600" fill="url(#bg)"/>
+<circle cx="480" cy="110" r="150" fill="#fff" opacity=".18"/><circle cx="90" cy="520" r="120" fill="#fff" opacity=".12"/>
+
+<g>
+<path d="M170 110 H290 V330 C290 360 330 380 370 395 C410 410 420 450 400 475 C380 500 330 495 300 480 C250 460 170 430 170 340Z" fill="#7c3aed"/>
+<path d="M170 110 H290 V330 C290 360 330 380 370 395 C410 410 420 450 400 475 C380 500 330 495 300 480 C250 460 170 430 170 340Z" fill="url(#shade)"/>
+<rect x="170" y="110" width="120" height="50" fill="#f5f3ff"/><rect x="170" y="160" width="120" height="14" fill="#a78bfa"/>
+<path d="M370 395 C410 410 420 450 400 475 C385 492 355 497 330 490 C360 470 372 430 350 400Z" fill="#f5f3ff" opacity=".9"/>
+</g>
+<g transform="translate(130 40)">
+<path d="M170 110 H290 V330 C290 360 330 380 370 395 C410 410 420 450 400 475 C380 500 330 495 300 480 C250 460 170 430 170 340Z" fill="#a78bfa" opacity=".95"/>
+<rect x="170" y="110" width="120" height="50" fill="#fff"/><rect x="170" y="160" width="120" height="14" fill="#7c3aed"/>
+<path d="M370 395 C410 410 420 450 400 475 C385 492 355 497 330 490 C360 470 372 430 350 400Z" fill="#fff" opacity=".9"/>
+</g></svg>

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" role="img">
+<defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#cffafe"/><stop offset="1" stop-color="#67e8f9"/></linearGradient>
+<linearGradient id="shade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".35"/><stop offset="1" stop-color="#000" stop-opacity=".12"/></linearGradient></defs>
+<rect width="600" height="600" fill="url(#bg)"/>
+<circle cx="480" cy="110" r="150" fill="#fff" opacity=".18"/><circle cx="90" cy="520" r="120" fill="#fff" opacity=".12"/>
+<ellipse cx="300" cy="500" rx="170" ry="16" fill="#000" opacity=".12"/>
+<rect x="240" y="80" width="120" height="60" rx="14" fill="#0f172a"/>
+<rect x="258" y="62" width="84" height="28" rx="10" fill="#1e293b"/>
+<path d="M255 140 H345 C345 170 395 190 395 250 V460 C395 485 380 500 355 500 H245 C220 500 205 485 205 460 V250 C205 190 255 170 255 140 Z" fill="#0ea5e9"/>
+<path d="M255 140 H345 C345 170 395 190 395 250 V460 C395 485 380 500 355 500 H245 C220 500 205 485 205 460 V250 C205 190 255 170 255 140 Z" fill="url(#shade)"/>
+<rect x="205" y="300" width="190" height="70" fill="#0f172a" opacity=".85"/>
+<text x="300" y="345" font-family="Helvetica,Arial,sans-serif" font-weight="700" font-size="30" text-anchor="middle" fill="#e0f2fe" letter-spacing="3">24H COLD</text>
+<path d="M232 200 C232 240 232 400 232 440" stroke="#fff" stroke-width="10" stroke-linecap="round" opacity=".45"/></svg>

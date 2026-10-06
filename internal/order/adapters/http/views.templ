@@ -1,0 +1,182 @@
+package http
+
+import (
+	"encoding/json"
+	"strconv"
+
+	"github.com/NaheedRayan/goat-architecture/internal/order/app"
+	"github.com/NaheedRayan/goat-architecture/internal/order/domain"
+	"github.com/NaheedRayan/goat-architecture/internal/platform/money"
+	"github.com/NaheedRayan/goat-architecture/internal/platform/ui"
+)
+
+type ShippingForm struct {
+	Key        string `json:"key"`
+	FullName   string `json:"full_name"`
+	Phone      string `json:"phone"`
+	Line1      string `json:"line1"`
+	Line2      string `json:"line2"`
+	City       string `json:"city"`
+	PostalCode string `json:"postal_code"`
+	Country    string `json:"country"`
+}
+
+func (f ShippingForm) blank() bool {
+	return f.FullName == "" && f.Phone == "" && f.Line1 == "" && f.Line2 == "" && f.City == "" && f.PostalCode == "" && f.Country == ""
+}
+
+templ CheckoutPage(cart app.CartView, saved []app.SavedAddress, f ShippingForm, errMsg string) {
+	@ui.Layout("Checkout") {
+		<h1 class="mb-6 text-2xl font-bold">Checkout</h1>
+		<div class="grid gap-8 lg:grid-cols-[1fr_22rem]">
+			<form method="post" action="/checkout" class="card space-y-4 p-6" x-data={ checkoutData(f, saved) } @submit="submitting = true" @pageshow.window="submitting = false">
+				<h2 class="text-lg font-semibold">Shipping address</h2>
+				<input type="hidden" name="idempotency_key" value={ f.Key }/>
+				<input type="hidden" name="expected_total" value={ strconv.FormatInt(cart.TotalCents, 10) }/>
+				if len(saved) > 0 {
+					<div>
+						<label class="label" for="saved">Use a saved address</label>
+						<select id="saved" class="input" @change="pick($event.target.value)">
+							<option value="">Choose…</option>
+							for i, a := range saved {
+								<option value={ strconv.Itoa(i) }>{ a.FullName }, { a.Line1 }, { a.City }</option>
+							}
+						</select>
+					</div>
+				}
+				<div class="grid gap-4 sm:grid-cols-2">
+					@input("full_name", "Full name", "name")
+					@input("phone", "Phone", "tel")
+				</div>
+				@input("line1", "Address line 1", "address-line1")
+				@input("line2", "Address line 2 (optional)", "address-line2")
+				<div class="grid gap-4 sm:grid-cols-3">
+					@input("city", "City", "address-level2")
+					@input("postal_code", "Postal code", "postal-code")
+					@input("country", "Country", "country-name")
+				</div>
+				@ui.FieldError(errMsg)
+				<button class="btn-primary w-full" type="submit" :disabled="submitting">
+					<span x-text="submitting ? 'Placing order…' : 'Place order & pay'">Place order & pay</span>
+				</button>
+			</form>
+			<aside class="card h-fit space-y-3 p-6">
+				<h2 class="text-lg font-semibold">Order summary</h2>
+				<ul class="divide-y divide-stone-100 text-sm">
+					for _, l := range cart.Lines {
+						<li class="flex justify-between gap-3 py-2">
+							<span>{ l.Name } × { strconv.Itoa(l.Quantity) }</span>
+							<span>{ money.Format(l.UnitPriceCents*int64(l.Quantity), cart.Currency) }</span>
+						</li>
+					}
+				</ul>
+				<p class="flex justify-between border-t border-stone-200 pt-3 text-lg font-bold"><span>Total</span><span>{ money.Format(cart.TotalCents, cart.Currency) }</span></p>
+			</aside>
+		</div>
+	}
+}
+
+templ input(name, label, autocomplete string) {
+	<div>
+		<label class="label" for={ name }>{ label }</label>
+		<input class="input" id={ name } name={ name } x-model={ "f." + name } autocomplete={ autocomplete } required?={ name != "line2" }/>
+	</div>
+}
+
+// checkoutData builds the Alpine state: the form values and the saved addresses.
+func checkoutData(f ShippingForm, saved []app.SavedAddress) (string, error) {
+	type sa struct {
+		FullName   string `json:"full_name"`
+		Phone      string `json:"phone"`
+		Line1      string `json:"line1"`
+		Line2      string `json:"line2"`
+		City       string `json:"city"`
+		PostalCode string `json:"postal_code"`
+		Country    string `json:"country"`
+	}
+	list := make([]sa, len(saved))
+	for i, a := range saved {
+		list[i] = sa{a.FullName, a.Phone, a.Line1, a.Line2, a.City, a.PostalCode, a.Country}
+	}
+	fj, err := json.Marshal(f)
+	if err != nil {
+		return "", err
+	}
+	sj, err := json.Marshal(list)
+	if err != nil {
+		return "", err
+	}
+	return "{ submitting: false, f: " + string(fj) + ", saved: " + string(sj) +
+		", pick(i) { if (i === '') return; this.f = { ...this.f, ...this.saved[+i] } } }", nil
+}
+
+templ ListPage(orders []domain.Order) {
+	@ui.Layout("Your orders") {
+		<h1 class="mb-6 text-2xl font-bold">Your orders</h1>
+		if len(orders) == 0 {
+			<div class="card p-10 text-center">
+				<p class="text-stone-500">You haven't placed any orders yet.</p>
+				<a href="/products" class="btn-primary mt-4">Start shopping</a>
+			</div>
+		} else {
+			<ul class="card divide-y divide-stone-200">
+				for _, o := range orders {
+					<li>
+						<a href={ templ.SafeURL("/orders/" + o.ID.String()) } class="flex items-center justify-between gap-4 p-4 hover:bg-stone-50">
+							<div>
+								<p class="font-medium">Order { shortID(o.ID.String()) }</p>
+								<p class="text-sm text-stone-500">{ o.CreatedAt.Format("2 Jan 2006, 15:04") }</p>
+							</div>
+							@ui.StatusBadge(o.Status)
+							<p class="font-semibold">{ money.Format(o.TotalCents, o.Currency) }</p>
+						</a>
+					</li>
+				}
+			</ul>
+		}
+	}
+}
+
+templ DetailPage(o domain.Order) {
+	@ui.Layout("Order " + shortID(o.ID.String())) {
+		<div class="mb-6 flex flex-wrap items-center justify-between gap-3">
+			<h1 class="text-2xl font-bold">Order { shortID(o.ID.String()) }</h1>
+			@ui.StatusBadge(o.Status)
+		</div>
+		if o.Status == domain.StatusAwaitingPayment && o.PaymentID != nil {
+			<div class="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 p-4">
+				<p class="text-sm text-amber-900">Your items are reserved for a short time. Complete payment to confirm the order.</p>
+				<div class="flex gap-2">
+					<a class="btn-primary" href={ templ.SafeURL("/pay/" + o.PaymentID.String()) }>Pay now</a>
+					<form method="post" action={ templ.SafeURL("/orders/" + o.ID.String() + "/cancel") } onsubmit="return confirm('Cancel this order?')">
+						<button class="btn-danger" type="submit">Cancel order</button>
+					</form>
+				</div>
+			</div>
+		}
+		<div class="grid gap-6 lg:grid-cols-[1fr_20rem]">
+			<ul class="card divide-y divide-stone-200">
+				for _, it := range o.Items {
+					<li class="flex justify-between gap-4 p-4 text-sm">
+						<span>{ it.Name } × { strconv.Itoa(it.Quantity) }</span>
+						<span class="font-medium">{ money.Format(it.SubtotalCents(), o.Currency) }</span>
+					</li>
+				}
+				<li class="flex justify-between p-4 text-lg font-bold"><span>Total</span><span>{ money.Format(o.TotalCents, o.Currency) }</span></li>
+			</ul>
+			<aside class="card h-fit space-y-1 p-5 text-sm">
+				<h2 class="mb-2 font-semibold">Ships to</h2>
+				<p>{ o.Shipping.FullName }</p>
+				<p>{ o.Shipping.Line1 }</p>
+				if o.Shipping.Line2 != "" {
+					<p>{ o.Shipping.Line2 }</p>
+				}
+				<p>{ o.Shipping.City }, { o.Shipping.PostalCode }</p>
+				<p>{ o.Shipping.Country }</p>
+				<p class="text-stone-500">{ o.Shipping.Phone }</p>
+			</aside>
+		</div>
+	}
+}
+
+func shortID(id string) string { return "#" + id[len(id)-8:] }

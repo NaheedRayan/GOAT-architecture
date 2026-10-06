@@ -1,0 +1,155 @@
+package http
+
+import (
+	"net/url"
+	"strconv"
+
+	"github.com/NaheedRayan/goat-architecture/internal/catalog/domain"
+	"github.com/NaheedRayan/goat-architecture/internal/platform/money"
+	"github.com/NaheedRayan/goat-architecture/internal/platform/ui"
+)
+
+templ HomePage(cards []Card) {
+	@ui.Layout("Home") {
+		<section class="mb-10 rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 px-8 py-14 text-white">
+			<h1 class="max-w-xl text-4xl font-extrabold tracking-tight">Good things, delivered fast.</h1>
+			<p class="mt-3 max-w-lg text-brand-100">Browse the catalog, add to cart and check out in a minute.</p>
+			<a href="/products" class="mt-6 inline-flex rounded-lg bg-white px-5 py-2.5 text-sm font-semibold text-brand-700 hover:bg-brand-50">Shop all products</a>
+		</section>
+		<h2 class="mb-4 text-xl font-bold">New arrivals</h2>
+		@Grid(cards)
+	}
+}
+
+templ Grid(cards []Card) {
+	if len(cards) == 0 {
+		<p class="rounded-xl border border-dashed border-stone-300 p-10 text-center text-stone-500">No products yet.</p>
+	} else {
+		<div class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+			for _, c := range cards {
+				@ProductCard(c)
+			}
+		</div>
+	}
+}
+
+templ ProductCard(c Card) {
+	<a href={ templ.SafeURL("/products/" + c.Product.Slug) } class="card group overflow-hidden transition hover:shadow-md">
+		@Image(c.Product, "aspect-square w-full")
+		<div class="p-3">
+			<p class="line-clamp-2 text-sm font-medium group-hover:text-brand-600">{ c.Product.Name }</p>
+			<p class="mt-1 flex items-center justify-between text-sm">
+				<span class="font-semibold">{ money.Format(c.Product.PriceCents, c.Product.Currency) }</span>
+				if !c.InStock {
+					<span class="badge bg-stone-100 text-stone-500">Sold out</span>
+				}
+			</p>
+		</div>
+	</a>
+}
+
+templ Image(p domain.Product, class string) {
+	if p.ImageURL != "" {
+		<img src={ p.ImageURL } alt={ p.Name } class={ class + " object-cover" } loading="lazy"/>
+	} else {
+		<div class={ class + " flex items-center justify-center bg-brand-50 text-4xl font-bold text-brand-500" } aria-hidden="true">{ initial(p.Name) }</div>
+	}
+}
+
+templ ListPage(f domain.Filter, page domain.Page, cats []domain.Category, cards []Card) {
+	@ui.Layout("Products") {
+		<div class="mb-6 flex flex-wrap items-end justify-between gap-4">
+			<h1 class="text-2xl font-bold">
+				if f.Query != "" {
+					Results for “{ f.Query }”
+				} else {
+					All products
+				}
+			</h1>
+			<form method="get" action="/products" class="flex gap-2 md:hidden">
+				<input type="search" name="q" value={ f.Query } placeholder="Search…" class="input"/>
+				<button class="btn-primary" type="submit">Go</button>
+			</form>
+		</div>
+		<div class="mb-6 flex flex-wrap gap-2 text-sm">
+			<a href={ templ.SafeURL(listURL(f.Query, "", 1)) } class={ chip(f.CategorySlug == "") }>All</a>
+			for _, c := range cats {
+				<a href={ templ.SafeURL(listURL(f.Query, c.Slug, 1)) } class={ chip(f.CategorySlug == c.Slug) }>{ c.Name }</a>
+			}
+		</div>
+		@Grid(cards)
+		if page.TotalPages() > 1 {
+			<nav class="mt-8 flex items-center justify-center gap-3 text-sm" aria-label="Pagination">
+				if page.Page > 1 {
+					<a class="btn-secondary" href={ templ.SafeURL(listURL(f.Query, f.CategorySlug, page.Page-1)) }>Previous</a>
+				}
+				<span class="text-stone-500">Page { strconv.Itoa(page.Page) } of { strconv.Itoa(page.TotalPages()) }</span>
+				if page.Page < page.TotalPages() {
+					<a class="btn-secondary" href={ templ.SafeURL(listURL(f.Query, f.CategorySlug, page.Page+1)) }>Next</a>
+				}
+			</nav>
+		}
+	}
+}
+
+templ DetailPage(c Card) {
+	@ui.Layout(c.Product.Name) {
+		<nav class="mb-4 text-sm text-stone-500"><a href="/products" class="hover:text-brand-600">Products</a> / { c.Product.Name }</nav>
+		<div class="grid gap-8 md:grid-cols-2">
+			<div class="card overflow-hidden">
+				@Image(c.Product, "aspect-square w-full")
+			</div>
+			<div>
+				<h1 class="text-3xl font-bold tracking-tight">{ c.Product.Name }</h1>
+				<p class="mt-2 text-2xl font-semibold text-brand-700">{ money.Format(c.Product.PriceCents, c.Product.Currency) }</p>
+				<p class="mt-4 whitespace-pre-line text-stone-600">{ c.Product.Description }</p>
+				if c.InStock {
+					<form method="post" action="/cart/items" class="mt-8 flex items-center gap-4" x-data="{ qty: 1 }">
+						<input type="hidden" name="product_id" value={ c.Product.ID.String() }/>
+						<input type="hidden" name="quantity" :value="qty"/>
+						<div class="inline-flex items-center rounded-lg border border-stone-300 bg-white">
+							<button type="button" class="px-3 py-2 text-lg" @click="qty = Math.max(1, qty - 1)" aria-label="Decrease quantity">−</button>
+							<span class="w-8 text-center text-sm font-medium" x-text="qty">1</span>
+							<button type="button" class="px-3 py-2 text-lg" @click="qty = Math.min(20, qty + 1)" aria-label="Increase quantity">+</button>
+						</div>
+						<button class="btn-primary" type="submit">Add to cart</button>
+					</form>
+				} else {
+					<p class="mt-8 badge bg-stone-100 px-3 py-1.5 text-sm text-stone-600">Currently sold out</p>
+				}
+			</div>
+		</div>
+	}
+}
+
+func chip(active bool) string {
+	base := "rounded-full border px-3 py-1 "
+	if active {
+		return base + "border-brand-600 bg-brand-600 text-white"
+	}
+	return base + "border-stone-300 bg-white hover:border-brand-500"
+}
+
+func listURL(q, category string, page int) string {
+	v := url.Values{}
+	if q != "" {
+		v.Set("q", q)
+	}
+	if category != "" {
+		v.Set("category", category)
+	}
+	if page > 1 {
+		v.Set("page", strconv.Itoa(page))
+	}
+	if len(v) == 0 {
+		return "/products"
+	}
+	return "/products?" + v.Encode()
+}
+
+func initial(name string) string {
+	for _, r := range name {
+		return string(r)
+	}
+	return "?"
+}

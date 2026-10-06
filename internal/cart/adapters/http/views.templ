@@ -1,0 +1,59 @@
+package http
+
+import (
+	"strconv"
+
+	"github.com/NaheedRayan/goat-architecture/internal/cart/domain"
+	"github.com/NaheedRayan/goat-architecture/internal/platform/money"
+	"github.com/NaheedRayan/goat-architecture/internal/platform/ui"
+)
+
+templ CartPage(v domain.View) {
+	@ui.Layout("Cart") {
+		<h1 class="mb-6 text-2xl font-bold">Your cart</h1>
+		if v.Empty() {
+			<div class="card p-10 text-center">
+				<p class="text-stone-500">Your cart is empty.</p>
+				<a href="/products" class="btn-primary mt-4">Start shopping</a>
+			</div>
+		} else {
+			<div class="grid gap-8 lg:grid-cols-[1fr_20rem]">
+				<ul class="card divide-y divide-stone-200">
+					for _, l := range v.Lines {
+						<li class="flex gap-4 p-4">
+							<a href={ templ.SafeURL("/products/" + l.Slug) } class="h-20 w-20 shrink-0 overflow-hidden rounded-lg bg-brand-50">
+								if l.ImageURL != "" {
+									<img src={ l.ImageURL } alt={ l.Name } class="h-full w-full object-cover"/>
+								}
+							</a>
+							<div class="flex-1">
+								<a href={ templ.SafeURL("/products/" + l.Slug) } class="font-medium hover:text-brand-600">{ l.Name }</a>
+								if l.Label != "" {
+									<p class="text-sm text-stone-500">{ l.Label }</p>
+								}
+								<p class="text-sm text-stone-500">{ money.Format(l.UnitPriceCents, l.Currency) } each</p>
+								<div class="mt-2 flex items-center gap-3">
+									<form method="post" action={ templ.SafeURL("/cart/items/" + l.VariantID.String() + "/update") } class="flex items-center gap-2">
+										<label class="sr-only" for={ "q-" + l.VariantID.String() }>Quantity</label>
+										<input id={ "q-" + l.VariantID.String() } class="input w-20" type="number" name="quantity" min="1" max="20" value={ strconv.Itoa(l.Quantity) }/>
+										<button class="btn-secondary" type="submit">Update</button>
+									</form>
+									<form method="post" action={ templ.SafeURL("/cart/items/" + l.VariantID.String() + "/remove") }>
+										<button class="text-sm text-red-600 hover:underline" type="submit">Remove</button>
+									</form>
+								</div>
+							</div>
+							<p class="font-semibold">{ money.Format(l.SubtotalCents(), l.Currency) }</p>
+						</li>
+					}
+				</ul>
+				<aside class="card h-fit space-y-4 p-6">
+					<h2 class="text-lg font-semibold">Summary</h2>
+					<p class="flex justify-between text-sm"><span>Items</span><span>{ strconv.Itoa(v.Count) }</span></p>
+					<p class="flex justify-between text-lg font-bold"><span>Total</span><span>{ money.Format(v.TotalCents, v.Currency) }</span></p>
+					<a href="/checkout" class="btn-primary w-full">Checkout</a>
+				</aside>
+			</div>
+		}
+	}
+}

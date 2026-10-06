@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" role="img">
+<defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fecdd3"/><stop offset="1" stop-color="#fb7185"/></linearGradient>
+<linearGradient id="shade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".35"/><stop offset="1" stop-color="#000" stop-opacity=".12"/></linearGradient></defs>
+<rect width="600" height="600" fill="url(#bg)"/>
+<circle cx="480" cy="110" r="150" fill="#fff" opacity=".18"/><circle cx="90" cy="520" r="120" fill="#fff" opacity=".12"/>
+<ellipse cx="300" cy="500" rx="170" ry="16" fill="#000" opacity=".12"/>
+<path d="M135 360 C135 230 215 150 300 150 C385 150 465 230 465 360 Z" fill="#be123c"/>
+<path d="M135 360 C135 230 215 150 300 150 C385 150 465 230 465 360 Z" fill="url(#shade)"/>
+<path d="M300 150 V360 M300 150 C250 190 230 270 232 360 M300 150 C350 190 370 270 368 360" stroke="#9f1239" stroke-width="5" fill="none" opacity=".7"/>
+<circle cx="300" cy="148" r="14" fill="#9f1239"/>
+<path d="M120 352 C160 372 330 380 520 372 C560 372 570 395 535 408 C440 440 230 440 140 404 C112 392 108 360 120 352Z" fill="#881337"/>
+<path d="M120 352 C160 372 330 380 520 372 C560 372 570 395 535 408 C440 440 230 440 140 404 C112 392 108 360 120 352Z" fill="url(#shade)"/>
+<rect x="258" y="235" width="84" height="50" rx="10" fill="#fff1f2"/>
+<text x="300" y="270" font-family="Helvetica,Arial,sans-serif" font-weight="800" font-size="26" text-anchor="middle" fill="#be123c">No.1</text></svg>

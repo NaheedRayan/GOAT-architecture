@@ -1,0 +1,43 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: goat
+          POSTGRES_PASSWORD: goat
+          POSTGRES_DB: goat_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U goat" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://goat:goat@localhost:5432/goat_test?sslmode=disable
+      TEST_DATABASE_URL: postgres://goat:goat@localhost:5432/goat_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Generated code is up to date
+        run: |
+          go run github.com/a-h/templ/cmd/templ@v0.3.1070 generate
+          go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate
+          git diff --exit-code -- '*_templ.go' '**/sqlcgen/*.go' \
+            || (echo "::error::run 'make generate' and commit the result" && exit 1)
+
+      - run: gofmt -l . | tee /dev/stderr | (! read)
+      - run: go vet ./...
+      - run: go build ./...
+      - name: Apply migrations
+        run: go run ./cmd/migrate
+      - name: Test (race detector, real Postgres)
+        run: go test -race -count=1 ./...

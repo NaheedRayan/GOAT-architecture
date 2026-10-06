@@ -1,0 +1,25 @@
+package http
+
+import (
+	"github.com/NaheedRayan/goat-architecture/internal/payment/domain"
+	"github.com/NaheedRayan/goat-architecture/internal/platform/money"
+	"github.com/NaheedRayan/goat-architecture/internal/platform/ui"
+)
+
+templ MockCheckoutPage(p domain.Payment) {
+	@ui.Layout("Payment") {
+		<div class="mx-auto max-w-md">
+			<div class="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-800">
+				Test payment page. No real money is charged.
+			</div>
+			<div class="card space-y-5 p-6">
+				<h1 class="text-xl font-bold">Complete payment</h1>
+				<p class="text-3xl font-extrabold text-brand-700">{ money.Format(p.AmountCents, p.Currency) }</p>
+				<form method="post" action={ templ.SafeURL("/pay/" + p.ID.String() + "/mock") } class="flex gap-3">
+					<button class="btn-primary flex-1" type="submit" name="outcome" value="succeeded">Pay now</button>
+					<button class="btn-secondary flex-1" type="submit" name="outcome" value="failed">Simulate failure</button>
+				</form>
+			</div>
+		</div>
+	}
+}

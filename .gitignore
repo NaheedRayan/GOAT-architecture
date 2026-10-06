@@ -1,0 +1,5 @@
+.env
+bin/
+tmp/
+web/static/app.css
+.DS_Store

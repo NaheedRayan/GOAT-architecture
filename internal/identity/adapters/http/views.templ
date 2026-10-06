@@ -1,0 +1,143 @@
+package http
+
+import (
+	"github.com/NaheedRayan/goat-architecture/internal/identity/domain"
+	"github.com/NaheedRayan/goat-architecture/internal/platform/ui"
+)
+
+type RegisterForm struct{ Name, Email string }
+
+type AddressForm struct {
+	FullName, Phone, Line1, Line2, City, PostalCode, Country string
+	IsDefault                                                bool
+}
+
+templ RegisterPage(f RegisterForm, errMsg string) {
+	@ui.Layout("Create account") {
+		<div class="mx-auto max-w-md">
+			<h1 class="mb-6 text-2xl font-bold">Create your account</h1>
+			<form method="post" action="/register" class="card space-y-4 p-6">
+				<div>
+					<label class="label" for="name">Name</label>
+					<input class="input" id="name" name="name" value={ f.Name } required autocomplete="name"/>
+				</div>
+				<div>
+					<label class="label" for="email">Email</label>
+					<input class="input" id="email" type="email" name="email" value={ f.Email } required autocomplete="email"/>
+				</div>
+				<div x-data="{ show: false }">
+					<label class="label" for="password">Password</label>
+					<div class="relative">
+						<input class="input pr-16" id="password" :type="show ? 'text' : 'password'" name="password" minlength="8" required autocomplete="new-password"/>
+						<button type="button" class="absolute inset-y-0 right-3 text-xs font-medium text-stone-500" @click="show = !show" x-text="show ? 'Hide' : 'Show'">Show</button>
+					</div>
+					<p class="mt-1 text-xs text-stone-500">At least 8 characters.</p>
+				</div>
+				@ui.FieldError(errMsg)
+				<button class="btn-primary w-full" type="submit">Create account</button>
+			</form>
+			<p class="mt-4 text-center text-sm text-stone-600">Already registered? <a class="font-medium text-brand-600" href="/login">Sign in</a></p>
+		</div>
+	}
+}
+
+templ LoginPage(email, next, errMsg string) {
+	@ui.Layout("Sign in") {
+		<div class="mx-auto max-w-md">
+			<h1 class="mb-6 text-2xl font-bold">Sign in</h1>
+			<form method="post" action="/login" class="card space-y-4 p-6">
+				<input type="hidden" name="next" value={ next }/>
+				<div>
+					<label class="label" for="email">Email</label>
+					<input class="input" id="email" type="email" name="email" value={ email } required autocomplete="email"/>
+				</div>
+				<div>
+					<label class="label" for="password">Password</label>
+					<input class="input" id="password" type="password" name="password" required autocomplete="current-password"/>
+				</div>
+				@ui.FieldError(errMsg)
+				<button class="btn-primary w-full" type="submit">Sign in</button>
+			</form>
+			<p class="mt-4 text-center text-sm text-stone-600">New here? <a class="font-medium text-brand-600" href="/register">Create an account</a></p>
+		</div>
+	}
+}
+
+templ AccountPage(addrs []domain.Address, f AddressForm, errMsg string) {
+	@ui.Layout("Account") {
+		<h1 class="mb-6 text-2xl font-bold">Your account</h1>
+		<div class="grid gap-8 md:grid-cols-2" x-data={ "{ adding: " + boolJS(errMsg != "") + " }" }>
+			<section>
+				<h2 class="mb-3 text-lg font-semibold">Saved addresses</h2>
+				if len(addrs) == 0 {
+					<p class="text-sm text-stone-500">No saved addresses yet.</p>
+				}
+				<ul class="space-y-3">
+					for _, a := range addrs {
+						<li class="card flex items-start justify-between gap-4 p-4 text-sm">
+							<div>
+								<p class="font-medium">
+									{ a.FullName }
+									if a.IsDefault {
+										<span class="badge ml-2 bg-brand-100 text-brand-700">Default</span>
+									}
+								</p>
+								<p class="text-stone-600">{ a.Line1 }{ lineTwo(a.Line2) }</p>
+								<p class="text-stone-600">{ a.City }, { a.PostalCode }, { a.Country }</p>
+								<p class="text-stone-500">{ a.Phone }</p>
+							</div>
+							<form method="post" action={ templ.SafeURL("/account/addresses/" + a.ID.String() + "/delete") } onsubmit="return confirm('Delete this address?')">
+								<button class="btn-danger" type="submit">Delete</button>
+							</form>
+						</li>
+					}
+				</ul>
+				<button type="button" class="btn-secondary mt-4" x-show="!adding" @click="adding = true">Add address</button>
+			</section>
+			<section x-show="adding" x-cloak>
+				<h2 class="mb-3 text-lg font-semibold">New address</h2>
+				<form method="post" action="/account/addresses" class="card space-y-3 p-6">
+					@field("full_name", "Full name", f.FullName, "name")
+					@field("phone", "Phone", f.Phone, "tel")
+					@field("line1", "Address line 1", f.Line1, "address-line1")
+					@field("line2", "Address line 2 (optional)", f.Line2, "address-line2")
+					<div class="grid grid-cols-2 gap-3">
+						@field("city", "City", f.City, "address-level2")
+						@field("postal_code", "Postal code", f.PostalCode, "postal-code")
+					</div>
+					@field("country", "Country", f.Country, "country-name")
+					<label class="flex items-center gap-2 text-sm">
+						<input type="checkbox" name="is_default" value="1" checked?={ f.IsDefault }/>
+						Make this my default address
+					</label>
+					@ui.FieldError(errMsg)
+					<div class="flex gap-3">
+						<button class="btn-primary" type="submit">Save address</button>
+						<button class="btn-secondary" type="button" @click="adding = false">Cancel</button>
+					</div>
+				</form>
+			</section>
+		</div>
+	}
+}
+
+templ field(name, label, value, autocomplete string) {
+	<div>
+		<label class="label" for={ name }>{ label }</label>
+		<input class="input" id={ name } name={ name } value={ value } autocomplete={ autocomplete }/>
+	</div>
+}
+
+func lineTwo(s string) string {
+	if s == "" {
+		return ""
+	}
+	return ", " + s
+}
+
+func boolJS(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}

@@ -1,0 +1,52 @@
+version: "2"
+sql:
+  - &mod
+    engine: postgresql
+    schema: migrations
+    queries: internal/identity/adapters/postgres/queries
+    gen:
+      go:
+        package: sqlcgen
+        out: internal/identity/adapters/postgres/sqlcgen
+        sql_package: pgx/v5
+        overrides: &overrides
+          - db_type: uuid
+            go_type: github.com/google/uuid.UUID
+          - db_type: uuid
+            nullable: true
+            go_type:
+              import: github.com/google/uuid
+              type: UUID
+              pointer: true
+          - db_type: pg_catalog.int8
+            nullable: true
+            go_type:
+              type: int64
+              pointer: true
+          - db_type: timestamptz
+            go_type: time.Time
+          - db_type: timestamptz
+            nullable: true
+            go_type:
+              type: time.Time
+              pointer: true
+  - <<: *mod
+    queries: internal/catalog/adapters/postgres/queries
+    gen:
+      go: {package: sqlcgen, out: internal/catalog/adapters/postgres/sqlcgen, sql_package: pgx/v5, overrides: *overrides}
+  - <<: *mod
+    queries: internal/inventory/adapters/postgres/queries
+    gen:
+      go: {package: sqlcgen, out: internal/inventory/adapters/postgres/sqlcgen, sql_package: pgx/v5, overrides: *overrides}
+  - <<: *mod
+    queries: internal/cart/adapters/postgres/queries
+    gen:
+      go: {package: sqlcgen, out: internal/cart/adapters/postgres/sqlcgen, sql_package: pgx/v5, overrides: *overrides}
+  - <<: *mod
+    queries: internal/payment/adapters/postgres/queries
+    gen:
+      go: {package: sqlcgen, out: internal/payment/adapters/postgres/sqlcgen, sql_package: pgx/v5, overrides: *overrides}
+  - <<: *mod
+    queries: internal/order/adapters/postgres/queries
+    gen:
+      go: {package: sqlcgen, out: internal/order/adapters/postgres/sqlcgen, sql_package: pgx/v5, overrides: *overrides}
