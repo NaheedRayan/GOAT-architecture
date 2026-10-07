@@ -217,3 +217,39 @@ func TestPurgeRemovesOldFinishedJobsOnly(t *testing.T) {
 		t.Fatalf("left after purge = %v, want only the pending job (old done/dead rows removed)", left)
 	}
 }
+
+func TestEverySubscriberOfAKindRuns(t *testing.T) {
+	w, pool, kind := setup(t)
+	ctx := context.Background()
+	if err := outbox.Enqueue(ctx, pool, kind, nil); err != nil {
+		t.Fatal(err)
+	}
+	var a, b int
+	w.Handle(kind, func(context.Context, outbox.Job) error { a++; return nil })
+	w.Handle(kind, func(context.Context, outbox.Job) error { b++; return nil })
+	if _, err := w.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if a != 1 || b != 1 {
+		t.Fatalf("subscribers ran a=%d b=%d, want both once", a, b)
+	}
+}
+
+func TestOneFailingSubscriberRetriesTheJobButOthersStillRan(t *testing.T) {
+	w, pool, kind := setup(t)
+	ctx := context.Background()
+	if err := outbox.Enqueue(ctx, pool, kind, nil); err != nil {
+		t.Fatal(err)
+	}
+	ok := 0
+	w.Handle(kind, func(context.Context, outbox.Job) error { return errors.New("boom") })
+	w.Handle(kind, func(context.Context, outbox.Job) error { ok++; return nil })
+	if _, err := w.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	pool.QueryRow(ctx, `SELECT status FROM platform.jobs WHERE kind=$1`, kind).Scan(&status)
+	if ok != 1 || status != "pending" {
+		t.Fatalf("healthy subscriber ran %d times, job status %q; want it to have run once and the job to be queued for retry", ok, status)
+	}
+}

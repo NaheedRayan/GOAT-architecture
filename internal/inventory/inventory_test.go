@@ -55,7 +55,7 @@ func TestReserveNeverOversells(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := api.Reserve(ctx, id.New(), []inventory.Item{{ProductID: pid, Quantity: 1}})
+			err := api.Reserve(ctx, id.New(), []inventory.Item{{VariantID: pid, Quantity: 1}})
 			var oos inventory.InsufficientStockError
 			switch {
 			case err == nil:
@@ -90,7 +90,7 @@ func TestReserveUnderContentionDoesNotFalselyFail(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := api.Reserve(ctx, id.New(), []inventory.Item{{ProductID: pid, Quantity: 1}}); err != nil {
+			if err := api.Reserve(ctx, id.New(), []inventory.Item{{VariantID: pid, Quantity: 1}}); err != nil {
 				t.Errorf("reserve failed with ample stock: %v", err)
 			}
 		}()
@@ -114,16 +114,16 @@ func TestReserveSpansLotsAndRollsBackOnShortage(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 4 of A spans both lots.
-	if err := api.Reserve(ctx, id.New(), []inventory.Item{{ProductID: a, Quantity: 4}}); err != nil {
+	if err := api.Reserve(ctx, id.New(), []inventory.Item{{VariantID: a, Quantity: 4}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := stock(t, api, a); got != 1 {
 		t.Fatalf("A stock = %d, want 1", got)
 	}
 	// A ok but B short: the whole reservation must roll back, including A's part.
-	err := api.Reserve(ctx, id.New(), []inventory.Item{{ProductID: a, Quantity: 1}, {ProductID: b, Quantity: 2}})
+	err := api.Reserve(ctx, id.New(), []inventory.Item{{VariantID: a, Quantity: 1}, {VariantID: b, Quantity: 2}})
 	var oos inventory.InsufficientStockError
-	if !errors.As(err, &oos) || oos.ProductID != b {
+	if !errors.As(err, &oos) || oos.VariantID != b {
 		t.Fatalf("err = %v, want insufficient stock for B", err)
 	}
 	if got := stock(t, api, a); got != 1 {
@@ -141,7 +141,7 @@ func TestReleaseCommitAndExpiry(t *testing.T) {
 
 	released, committed, expiring := id.New(), id.New(), id.New()
 	for _, o := range []uuid.UUID{released, committed, expiring} {
-		if err := api.Reserve(ctx, o, []inventory.Item{{ProductID: pid, Quantity: 2}}); err != nil {
+		if err := api.Reserve(ctx, o, []inventory.Item{{VariantID: pid, Quantity: 2}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -167,7 +167,7 @@ func TestReleaseCommitAndExpiry(t *testing.T) {
 	}
 
 	// Age every reservation: only still-reserved ones may be freed.
-	exec(`UPDATE inventory.reservations SET expires_at = now() - interval '1 minute' WHERE product_id = $1`, pid)
+	exec(`UPDATE inventory.reservations SET expires_at = now() - interval '1 minute' WHERE variant_id = $1`, pid)
 	if _, err := api.ReleaseExpired(ctx, 100); err != nil {
 		t.Fatal(err)
 	}
@@ -189,13 +189,13 @@ func TestExpirySweepReleasesWholeOrders(t *testing.T) {
 		if err := api.AddLot(ctx, pid, "t", 5); err != nil {
 			t.Fatal(err)
 		}
-		items = append(items, inventory.Item{ProductID: pid, Quantity: 2})
+		items = append(items, inventory.Item{VariantID: pid, Quantity: 2})
 	}
 	if err := api.Reserve(ctx, order, items); err != nil {
 		t.Fatal(err)
 	}
 	for _, pid := range pids {
-		exec(`UPDATE inventory.reservations SET expires_at = now() - interval '1 minute' WHERE product_id = $1`, pid)
+		exec(`UPDATE inventory.reservations SET expires_at = now() - interval '1 minute' WHERE variant_id = $1`, pid)
 	}
 	if _, err := api.ReleaseExpired(ctx, 1); err != nil { // batch of ONE reservation
 		t.Fatal(err)

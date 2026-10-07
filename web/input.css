@@ -8,15 +8,26 @@
   --color-brand-500: #f97316;
   --color-brand-600: #ea580c;
   --color-brand-700: #c2410c;
+  --color-brand-800: #9a3412;
 }
 
 @utility btn { @apply inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 disabled:opacity-50; }
-@utility btn-primary { @apply btn bg-brand-600 text-white hover:bg-brand-700; }
+@utility btn-primary { @apply btn bg-brand-700 text-white hover:bg-brand-800; }
 @utility btn-secondary { @apply btn border border-stone-300 bg-white text-stone-800 hover:bg-stone-100; }
 @utility btn-danger { @apply btn border border-red-200 bg-white text-red-700 hover:bg-red-50; }
-@utility input { @apply block w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm placeholder:text-stone-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500; }
+@utility input { @apply block w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm shadow-sm placeholder:text-stone-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500; }
 @utility label { @apply mb-1 block text-sm font-medium text-stone-700; }
 @utility card { @apply rounded-xl border border-stone-200 bg-white shadow-sm; }
 @utility badge { @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium; }
 
 [x-cloak] { display: none !important; }
+
+/* Content pages (rendered Markdown): readable defaults without a typography plugin. */
+.prose-page h1 { @apply mb-4 text-3xl font-extrabold tracking-tight; }
+.prose-page h2 { @apply mb-2 mt-8 text-xl font-bold; }
+.prose-page h3 { @apply mb-2 mt-6 text-lg font-semibold; }
+.prose-page p { @apply my-3 leading-relaxed text-stone-700; }
+.prose-page ul { @apply my-3 list-disc space-y-1 pl-6 text-stone-700; }
+.prose-page ol { @apply my-3 list-decimal space-y-1 pl-6 text-stone-700; }
+.prose-page a { @apply text-brand-700 underline hover:text-brand-700; }
+.prose-page strong { @apply font-semibold text-stone-900; }

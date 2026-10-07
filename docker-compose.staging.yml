@@ -1,0 +1,35 @@
+# A production-shaped stack for rehearsals: the real image, a real SMTP catcher, no mock payments.
+#   cp .env.example staging.env   # fill in JWT_SEED, secrets; set APP_ENV=production, PAYMENT_PROVIDER=none, PAYMENT_METHODS=cod
+#   docker compose -f docker-compose.staging.yml --env-file staging.env up --build
+# Mail is caught by Mailpit at http://localhost:8025 (SMTP on mailpit:1025).
+services:
+  postgres:
+    image: postgres:17
+    environment: { POSTGRES_USER: goat, POSTGRES_PASSWORD: goat, POSTGRES_DB: goat }
+    volumes: [stagingdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U goat"]
+      interval: 5s
+      retries: 10
+  mailpit:
+    image: axllent/mailpit
+    ports: ["8025:8025"]
+  migrate:
+    build: .
+    command: ["/migrate"]
+    environment: { DATABASE_URL: "postgres://goat:goat@postgres:5432/goat?sslmode=disable" }
+    depends_on: { postgres: { condition: service_healthy } }
+  app:
+    build: .
+    env_file: staging.env
+    environment:
+      DATABASE_URL: "postgres://goat:goat@postgres:5432/goat?sslmode=disable"
+      SMTP_ADDR: "mailpit:1025"
+      SMTP_TLS: "none"
+      PUBLIC_URL: "http://localhost:8080"
+    ports: ["8080:8080"]
+    volumes: [uploads:/data/uploads]
+    depends_on: { migrate: { condition: service_completed_successfully } }
+volumes:
+  stagingdata:
+  uploads:

@@ -143,3 +143,27 @@ func (r *Repo) SetLotQuantity(ctx context.Context, variantID, lotID uuid.UUID, q
 	}
 	return err
 }
+
+func (r *Repo) CommittedByOrder(ctx context.Context, orderID uuid.UUID) ([]domain.Reservation, error) {
+	rows, err := r.q(ctx).ListCommittedByOrder(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.Reservation, len(rows))
+	for i, x := range rows {
+		out[i] = domain.Reservation{ID: x.ID, OrderID: orderID, VariantID: x.VariantID, LotID: x.LotID, Quantity: int(x.Quantity)}
+	}
+	return out, nil
+}
+
+func (r *Repo) LowStock(ctx context.Context, threshold, limit int) ([]domain.StockLevel, error) {
+	rows, err := r.q(ctx).LowStock(ctx, sqlcgen.LowStockParams{Threshold: int64(threshold), MaxRows: int32(limit)})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.StockLevel, len(rows))
+	for i, x := range rows {
+		out[i] = domain.StockLevel{VariantID: x.VariantID, Available: int(x.Available)}
+	}
+	return out, nil
+}

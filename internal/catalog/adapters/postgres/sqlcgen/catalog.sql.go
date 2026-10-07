@@ -28,6 +28,17 @@ func (q *Queries) ArchiveProduct(ctx context.Context, id uuid.UUID) (int64, erro
 	return result.RowsAffected(), nil
 }
 
+const countImageReferences = `-- name: CountImageReferences :one
+SELECT count(*)::bigint FROM catalog.product_images WHERE url = $1 OR thumb_url = $1
+`
+
+func (q *Queries) CountImageReferences(ctx context.Context, url string) (int64, error) {
+	row := q.db.QueryRow(ctx, countImageReferences, url)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const deleteCategory = `-- name: DeleteCategory :execrows
 DELETE FROM catalog.categories WHERE id = $1
 `
@@ -40,8 +51,41 @@ func (q *Queries) DeleteCategory(ctx context.Context, id uuid.UUID) (int64, erro
 	return result.RowsAffected(), nil
 }
 
+const deleteImage = `-- name: DeleteImage :exec
+DELETE FROM catalog.product_images WHERE id = $1
+`
+
+func (q *Queries) DeleteImage(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteImage, id)
+	return err
+}
+
+const getImage = `-- name: GetImage :one
+SELECT id, product_id, url, thumb_url, alt, position, created_at FROM catalog.product_images WHERE id = $1 AND product_id = $2
+`
+
+type GetImageParams struct {
+	ID        uuid.UUID
+	ProductID uuid.UUID
+}
+
+func (q *Queries) GetImage(ctx context.Context, arg GetImageParams) (CatalogProductImage, error) {
+	row := q.db.QueryRow(ctx, getImage, arg.ID, arg.ProductID)
+	var i CatalogProductImage
+	err := row.Scan(
+		&i.ID,
+		&i.ProductID,
+		&i.Url,
+		&i.ThumbUrl,
+		&i.Alt,
+		&i.Position,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getProductByID = `-- name: GetProductByID :one
-SELECT id, category_id, slug, name, description, price_cents, currency, image_url, active, created_at, archived_at, option_name FROM catalog.products WHERE id = $1
+SELECT id, category_id, slug, name, description, price_cents, currency, image_url, active, created_at, archived_at, option_name, thumb_url FROM catalog.products WHERE id = $1
 `
 
 func (q *Queries) GetProductByID(ctx context.Context, id uuid.UUID) (CatalogProduct, error) {
@@ -60,12 +104,13 @@ func (q *Queries) GetProductByID(ctx context.Context, id uuid.UUID) (CatalogProd
 		&i.CreatedAt,
 		&i.ArchivedAt,
 		&i.OptionName,
+		&i.ThumbUrl,
 	)
 	return i, err
 }
 
 const getProductBySlug = `-- name: GetProductBySlug :one
-SELECT id, category_id, slug, name, description, price_cents, currency, image_url, active, created_at, archived_at, option_name FROM catalog.products WHERE slug = $1 AND archived_at IS NULL
+SELECT id, category_id, slug, name, description, price_cents, currency, image_url, active, created_at, archived_at, option_name, thumb_url FROM catalog.products WHERE slug = $1 AND archived_at IS NULL
 `
 
 func (q *Queries) GetProductBySlug(ctx context.Context, slug string) (CatalogProduct, error) {
@@ -84,12 +129,13 @@ func (q *Queries) GetProductBySlug(ctx context.Context, slug string) (CatalogPro
 		&i.CreatedAt,
 		&i.ArchivedAt,
 		&i.OptionName,
+		&i.ThumbUrl,
 	)
 	return i, err
 }
 
 const getProductsByIDs = `-- name: GetProductsByIDs :many
-SELECT id, category_id, slug, name, description, price_cents, currency, image_url, active, created_at, archived_at, option_name FROM catalog.products WHERE id = ANY($1::uuid[])
+SELECT id, category_id, slug, name, description, price_cents, currency, image_url, active, created_at, archived_at, option_name, thumb_url FROM catalog.products WHERE id = ANY($1::uuid[])
 `
 
 func (q *Queries) GetProductsByIDs(ctx context.Context, ids []uuid.UUID) ([]CatalogProduct, error) {
@@ -114,6 +160,7 @@ func (q *Queries) GetProductsByIDs(ctx context.Context, ids []uuid.UUID) ([]Cata
 			&i.CreatedAt,
 			&i.ArchivedAt,
 			&i.OptionName,
+			&i.ThumbUrl,
 		); err != nil {
 			return nil, err
 		}
@@ -212,6 +259,31 @@ type InsertCategoryParams struct {
 
 func (q *Queries) InsertCategory(ctx context.Context, arg InsertCategoryParams) error {
 	_, err := q.db.Exec(ctx, insertCategory, arg.ID, arg.Slug, arg.Name)
+	return err
+}
+
+const insertImage = `-- name: InsertImage :exec
+INSERT INTO catalog.product_images (id, product_id, url, thumb_url, alt, position) VALUES ($1, $2, $3, $4, $5, $6)
+`
+
+type InsertImageParams struct {
+	ID        uuid.UUID
+	ProductID uuid.UUID
+	Url       string
+	ThumbUrl  string
+	Alt       string
+	Position  int32
+}
+
+func (q *Queries) InsertImage(ctx context.Context, arg InsertImageParams) error {
+	_, err := q.db.Exec(ctx, insertImage,
+		arg.ID,
+		arg.ProductID,
+		arg.Url,
+		arg.ThumbUrl,
+		arg.Alt,
+		arg.Position,
+	)
 	return err
 }
 
@@ -368,26 +440,99 @@ func (q *Queries) ListCategoryStats(ctx context.Context) ([]ListCategoryStatsRow
 	return items, nil
 }
 
+const listImagesByProduct = `-- name: ListImagesByProduct :many
+SELECT id, product_id, url, thumb_url, alt, position, created_at FROM catalog.product_images WHERE product_id = $1 ORDER BY position, created_at
+`
+
+func (q *Queries) ListImagesByProduct(ctx context.Context, productID uuid.UUID) ([]CatalogProductImage, error) {
+	rows, err := q.db.Query(ctx, listImagesByProduct, productID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CatalogProductImage
+	for rows.Next() {
+		var i CatalogProductImage
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProductID,
+			&i.Url,
+			&i.ThumbUrl,
+			&i.Alt,
+			&i.Position,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listImagesByProducts = `-- name: ListImagesByProducts :many
+SELECT id, product_id, url, thumb_url, alt, position, created_at FROM catalog.product_images WHERE product_id = ANY($1::uuid[]) ORDER BY product_id, position, created_at
+`
+
+func (q *Queries) ListImagesByProducts(ctx context.Context, ids []uuid.UUID) ([]CatalogProductImage, error) {
+	rows, err := q.db.Query(ctx, listImagesByProducts, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CatalogProductImage
+	for rows.Next() {
+		var i CatalogProductImage
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProductID,
+			&i.Url,
+			&i.ThumbUrl,
+			&i.Alt,
+			&i.Position,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProducts = `-- name: ListProducts :many
 SELECT p.id, p.category_id, p.slug, p.name, p.description, p.price_cents, p.currency,
-       p.image_url, p.active, p.created_at, p.archived_at, p.option_name,
-       COALESCE((SELECT min(COALESCE(v.price_cents, p.price_cents)) FROM catalog.variants v WHERE v.product_id = p.id AND v.active), p.price_cents)::bigint AS min_price,
-       COALESCE((SELECT max(COALESCE(v.price_cents, p.price_cents)) FROM catalog.variants v WHERE v.product_id = p.id AND v.active), p.price_cents)::bigint AS max_price,
+       p.image_url, p.thumb_url, p.active, p.created_at, p.archived_at, p.option_name,
+       COALESCE(vp.min_p, p.price_cents)::bigint AS min_price,
+       COALESCE(vp.max_p, p.price_cents)::bigint AS max_price,
        (count(*) OVER ())::bigint AS total
 FROM catalog.products p
 LEFT JOIN catalog.categories c ON c.id = p.category_id
+LEFT JOIN LATERAL (
+    SELECT min(COALESCE(v.price_cents, p.price_cents)) AS min_p, max(COALESCE(v.price_cents, p.price_cents)) AS max_p
+    FROM catalog.variants v WHERE v.product_id = p.id AND v.active
+) vp ON true
 WHERE (p.archived_at IS NOT NULL) = $1::bool
   AND ($2::bool OR p.active)
   AND ($3::text = ''
        OR to_tsvector('english', p.name || ' ' || p.description) @@ websearch_to_tsquery('english', $3::text)
        OR p.name ILIKE $4::text)
   AND ($5::text = '' OR c.slug = $5::text)
+  AND ($6::bigint <= 0 OR COALESCE(vp.min_p, p.price_cents) >= $6::bigint)
+  AND ($7::bigint <= 0 OR COALESCE(vp.min_p, p.price_cents) <= $7::bigint)
 ORDER BY
-  CASE WHEN $3::text <> ''
+  CASE WHEN $8::text = 'price_asc' THEN COALESCE(vp.min_p, p.price_cents) END ASC NULLS LAST,
+  CASE WHEN $8::text = 'price_desc' THEN COALESCE(vp.min_p, p.price_cents) END DESC NULLS LAST,
+  CASE WHEN $8::text = 'name' THEN lower(p.name) END ASC NULLS LAST,
+  CASE WHEN $8::text = '' AND $3::text <> ''
        THEN ts_rank(to_tsvector('english', p.name || ' ' || p.description), websearch_to_tsquery('english', $3::text))
   END DESC NULLS LAST,
   p.created_at DESC, p.id DESC
-LIMIT $7 OFFSET $6
+LIMIT $10 OFFSET $9
 `
 
 type ListProductsParams struct {
@@ -396,6 +541,9 @@ type ListProductsParams struct {
 	Query           string
 	LikePattern     string
 	CategorySlug    string
+	MinPrice        int64
+	MaxPrice        int64
+	Sort            string
 	PageOffset      int32
 	PageLimit       int32
 }
@@ -409,6 +557,7 @@ type ListProductsRow struct {
 	PriceCents  int64
 	Currency    string
 	ImageUrl    string
+	ThumbUrl    string
 	Active      bool
 	CreatedAt   time.Time
 	ArchivedAt  *time.Time
@@ -425,6 +574,9 @@ func (q *Queries) ListProducts(ctx context.Context, arg ListProductsParams) ([]L
 		arg.Query,
 		arg.LikePattern,
 		arg.CategorySlug,
+		arg.MinPrice,
+		arg.MaxPrice,
+		arg.Sort,
 		arg.PageOffset,
 		arg.PageLimit,
 	)
@@ -444,6 +596,7 @@ func (q *Queries) ListProducts(ctx context.Context, arg ListProductsParams) ([]L
 			&i.PriceCents,
 			&i.Currency,
 			&i.ImageUrl,
+			&i.ThumbUrl,
 			&i.Active,
 			&i.CreatedAt,
 			&i.ArchivedAt,
@@ -484,6 +637,55 @@ func (q *Queries) ListVariantsByProducts(ctx context.Context, ids []uuid.UUID) (
 			&i.Position,
 			&i.Active,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const relatedProducts = `-- name: RelatedProducts :many
+SELECT p.id, p.category_id, p.slug, p.name, p.description, p.price_cents, p.currency, p.image_url, p.active, p.created_at, p.archived_at, p.option_name, p.thumb_url FROM catalog.products p
+WHERE p.id <> $1::uuid AND p.active AND p.archived_at IS NULL
+  AND p.category_id IS NOT NULL
+  AND p.category_id = (SELECT category_id FROM catalog.products WHERE id = $1::uuid)
+ORDER BY p.created_at DESC, p.id DESC
+LIMIT $2
+`
+
+type RelatedProductsParams struct {
+	ProductID uuid.UUID
+	MaxRows   int32
+}
+
+// Other live products from the same category, newest first.
+func (q *Queries) RelatedProducts(ctx context.Context, arg RelatedProductsParams) ([]CatalogProduct, error) {
+	rows, err := q.db.Query(ctx, relatedProducts, arg.ProductID, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CatalogProduct
+	for rows.Next() {
+		var i CatalogProduct
+		if err := rows.Scan(
+			&i.ID,
+			&i.CategoryID,
+			&i.Slug,
+			&i.Name,
+			&i.Description,
+			&i.PriceCents,
+			&i.Currency,
+			&i.ImageUrl,
+			&i.Active,
+			&i.CreatedAt,
+			&i.ArchivedAt,
+			&i.OptionName,
+			&i.ThumbUrl,
 		); err != nil {
 			return nil, err
 		}
@@ -537,6 +739,64 @@ func (q *Queries) RestoreProduct(ctx context.Context, id uuid.UUID) (int64, erro
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const setImagePosition = `-- name: SetImagePosition :exec
+UPDATE catalog.product_images SET position = $2 WHERE id = $1
+`
+
+type SetImagePositionParams struct {
+	ID       uuid.UUID
+	Position int32
+}
+
+func (q *Queries) SetImagePosition(ctx context.Context, arg SetImagePositionParams) error {
+	_, err := q.db.Exec(ctx, setImagePosition, arg.ID, arg.Position)
+	return err
+}
+
+const setProductCover = `-- name: SetProductCover :exec
+UPDATE catalog.products SET image_url = $2, thumb_url = $3 WHERE id = $1
+`
+
+type SetProductCoverParams struct {
+	ID       uuid.UUID
+	ImageUrl string
+	ThumbUrl string
+}
+
+func (q *Queries) SetProductCover(ctx context.Context, arg SetProductCoverParams) error {
+	_, err := q.db.Exec(ctx, setProductCover, arg.ID, arg.ImageUrl, arg.ThumbUrl)
+	return err
+}
+
+const sitemapProducts = `-- name: SitemapProducts :many
+SELECT slug, created_at FROM catalog.products WHERE active AND archived_at IS NULL ORDER BY created_at DESC, id LIMIT 50000
+`
+
+type SitemapProductsRow struct {
+	Slug      string
+	CreatedAt time.Time
+}
+
+func (q *Queries) SitemapProducts(ctx context.Context) ([]SitemapProductsRow, error) {
+	rows, err := q.db.Query(ctx, sitemapProducts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SitemapProductsRow
+	for rows.Next() {
+		var i SitemapProductsRow
+		if err := rows.Scan(&i.Slug, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const updateProduct = `-- name: UpdateProduct :execrows

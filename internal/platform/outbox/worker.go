@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -15,7 +16,8 @@ type Handler func(ctx context.Context, j Job) error
 type Worker struct {
 	q        db.DBTX
 	log      *slog.Logger
-	handlers map[string]Handler
+	handlers map[string][]Handler
+	redact   map[string]bool
 
 	BatchSize    int
 	PollInterval time.Duration
@@ -27,14 +29,24 @@ type Worker struct {
 
 func NewWorker(q db.DBTX, log *slog.Logger) *Worker {
 	return &Worker{
-		q: q, log: log, handlers: map[string]Handler{},
+		q: q, log: log, handlers: map[string][]Handler{}, redact: map[string]bool{},
 		BatchSize: 10, PollInterval: time.Second, Lease: 5 * time.Minute, HandlerTimeout: 4 * time.Minute,
 	}
 }
 
-// Handle registers the handler for a job kind and makes the worker claim that
-// kind. Call before Run.
-func (w *Worker) Handle(kind string, h Handler) { w.handlers[kind] = h }
+// RedactPayload wipes the payload of jobs of these kinds once they finish (or
+// die), for jobs whose payload is sensitive.
+func (w *Worker) RedactPayload(kinds ...string) {
+	for _, k := range kinds {
+		w.redact[k] = true
+	}
+}
+
+// Handle subscribes a handler to a job kind and makes the worker claim that kind.
+// Several modules may subscribe to the same kind (an event fans out to all of
+// them). If any handler fails the whole job is retried, so every handler must be
+// idempotent. Call before Run.
+func (w *Worker) Handle(kind string, h Handler) { w.handlers[kind] = append(w.handlers[kind], h) }
 
 // Run polls until ctx is cancelled.
 func (w *Worker) Run(ctx context.Context) {
@@ -100,23 +112,29 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 }
 
 func (w *Worker) process(ctx context.Context, j Job) {
-	h, ok := w.handlers[j.Kind]
+	hs := w.handlers[j.Kind]
 	var err error
-	if !ok {
+	if len(hs) == 0 {
 		err = fmt.Errorf("no handler for kind %q", j.Kind)
 	} else {
 		// Detached from ctx: when the process is told to stop, jobs already claimed
 		// finish instead of failing half-way and burning a retry.
 		hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), w.HandlerTimeout)
-		err = safeCall(hctx, h, j)
+		var errs []error
+		for _, h := range hs {
+			if herr := safeCall(hctx, h, j); herr != nil {
+				errs = append(errs, herr)
+			}
+		}
 		cancel()
+		err = errors.Join(errs...)
 	}
 	// Use a fresh context so shutdown does not strand the status update.
 	uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if err != nil {
 		w.log.Warn("job failed", "kind", j.Kind, "id", j.ID, "attempt", j.Attempts, "err", err)
-		dead, ferr := fail(uctx, w.q, j, err)
+		dead, ferr := fail(uctx, w.q, j, err, w.redact[j.Kind])
 		if ferr != nil {
 			w.log.Error("job fail update", "id", j.ID, "err", ferr)
 		}
@@ -125,7 +143,7 @@ func (w *Worker) process(ctx context.Context, j Job) {
 		}
 		return
 	}
-	if cerr := complete(uctx, w.q, j.ID); cerr != nil {
+	if cerr := complete(uctx, w.q, j.ID, w.redact[j.Kind]); cerr != nil {
 		w.log.Error("job complete update", "id", j.ID, "err", cerr)
 	}
 }

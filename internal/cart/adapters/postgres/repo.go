@@ -4,6 +4,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -103,4 +104,24 @@ func (r *Repo) Merge(ctx context.Context, from, to string) error {
 
 func (r *Repo) PurgeGuests(ctx context.Context, before time.Time) (int64, error) {
 	return r.q(ctx).PurgeGuestCarts(ctx, before)
+}
+
+func (r *Repo) ClaimAbandoned(ctx context.Context, idleBefore, notOlderThan time.Time, limit int) ([]domain.Abandoned, error) {
+	q := r.q(ctx)
+	rows, err := q.ClaimAbandonedCarts(ctx, sqlcgen.ClaimAbandonedCartsParams{IdleBefore: idleBefore, NotOlderThan: notOlderThan, MaxRows: int32(limit)})
+	if err != nil {
+		return nil, err
+	}
+	var out []domain.Abandoned
+	for _, c := range rows {
+		uid, err := uuid.Parse(strings.TrimPrefix(c.Owner, "user:"))
+		if err != nil {
+			continue
+		}
+		if err := q.MarkCartReminded(ctx, c.ID); err != nil {
+			return nil, err
+		}
+		out = append(out, domain.Abandoned{UserID: uid, Owner: c.Owner, Items: int(c.Items)})
+	}
+	return out, nil
 }

@@ -1,6 +1,7 @@
 package http
 
 import (
+	"encoding/json"
 	"net/url"
 	"strconv"
 
@@ -11,7 +12,7 @@ import (
 
 templ HomePage(cards []Card) {
 	@ui.Layout("Home") {
-		<section class="mb-10 rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 px-8 py-14 text-white">
+		<section class="mb-10 rounded-2xl bg-gradient-to-br from-brand-700 to-brand-800 px-8 py-14 text-white">
 			<h1 class="max-w-xl text-4xl font-extrabold tracking-tight">Good things, delivered fast.</h1>
 			<p class="mt-3 max-w-lg text-brand-100">Browse the catalog, add to cart and check out in a minute.</p>
 			<a href="/products" class="mt-6 inline-flex rounded-lg bg-white px-5 py-2.5 text-sm font-semibold text-brand-700 hover:bg-brand-50">Shop all products</a>
@@ -37,9 +38,17 @@ templ ProductCard(c Card) {
 	<a href={ templ.SafeURL("/products/" + c.Product.Slug) } class="card group overflow-hidden transition hover:shadow-md">
 		@Image(c.Product, "aspect-square w-full")
 		<div class="p-3">
-			<p class="line-clamp-2 text-sm font-medium group-hover:text-brand-600">{ c.Product.Name }</p>
+			<p class="line-clamp-2 text-sm font-medium group-hover:text-brand-700">{ c.Product.Name }</p>
+			if c.Rating.Count > 0 {
+				<p class="mt-0.5 text-xs text-stone-500"><span class="text-amber-500" aria-hidden="true">★</span> { strconv.FormatFloat(c.Rating.Average, 'f', 1, 64) } ({ strconv.Itoa(c.Rating.Count) })<span class="sr-only"> out of 5 stars from { strconv.Itoa(c.Rating.Count) } reviews</span></p>
+			}
 			<p class="mt-1 flex items-center justify-between text-sm">
-				<span class="font-semibold">{ money.Format(c.Product.PriceCents, c.Product.Currency) }</span>
+				<span class="font-semibold">
+					if c.PriceVaries() {
+						<span class="mr-1 text-xs font-normal text-stone-500">From</span>
+					}
+					{ money.Format(c.FromPrice(), c.Product.Currency) }
+				</span>
 				if !c.InStock {
 					<span class="badge bg-stone-100 text-stone-500">Sold out</span>
 				}
@@ -48,95 +57,280 @@ templ ProductCard(c Card) {
 	</a>
 }
 
+// Image is the card-sized cover (thumbnail when available).
 templ Image(p domain.Product, class string) {
-	if p.ImageURL != "" {
-		<img src={ p.ImageURL } alt={ p.Name } class={ class + " object-cover" } loading="lazy"/>
+	if src := coverSrc(p); src != "" {
+		<img src={ src } alt={ p.Name } class={ class + " object-cover" } loading="lazy"/>
 	} else {
 		<div class={ class + " flex items-center justify-center bg-brand-50 text-4xl font-bold text-brand-500" } aria-hidden="true">{ initial(p.Name) }</div>
 	}
 }
 
-templ ListPage(f domain.Filter, page domain.Page, cats []domain.Category, cards []Card) {
-	@ui.Layout("Products") {
-		<div class="mb-6 flex flex-wrap items-end justify-between gap-4">
-			<h1 class="text-2xl font-bold">
-				if f.Query != "" {
-					Results for “{ f.Query }”
-				} else {
-					All products
+// Gallery is the product page's picture area: the full cover plus thumbnails to switch between images.
+templ Gallery(p domain.Product) {
+	if len(p.Images) > 1 {
+		<div x-data={ galleryData(p) }>
+			<div class="card overflow-hidden">
+				<img :src="cur.url" :alt="cur.alt" src={ p.Images[0].URL } alt={ imageAlt(p, p.Images[0]) } class="aspect-square w-full object-cover"/>
+			</div>
+			<ul class="mt-3 flex gap-2 overflow-x-auto">
+				for i, im := range p.Images {
+					<li>
+						<button type="button" @click={ "cur = images[" + strconv.Itoa(i) + "]" } class="block h-16 w-16 overflow-hidden rounded-lg border border-stone-300 hover:border-brand-500" aria-label={ "Show image " + strconv.Itoa(i+1) }>
+							<img src={ im.ThumbURL } alt="" loading="lazy" class="h-full w-full object-cover"/>
+						</button>
+					</li>
 				}
-			</h1>
-			<form method="get" action="/products" class="flex gap-2 md:hidden">
-				<input type="search" name="q" value={ f.Query } placeholder="Search…" class="input"/>
-				<button class="btn-primary" type="submit">Go</button>
-			</form>
+			</ul>
 		</div>
-		<div class="mb-6 flex flex-wrap gap-2 text-sm">
-			<a href={ templ.SafeURL(listURL(f.Query, "", 1)) } class={ chip(f.CategorySlug == "") }>All</a>
-			for _, c := range cats {
-				<a href={ templ.SafeURL(listURL(f.Query, c.Slug, 1)) } class={ chip(f.CategorySlug == c.Slug) }>{ c.Name }</a>
+	} else {
+		<div class="card overflow-hidden">
+			if src := fullSrc(p); src != "" {
+				<img src={ src } alt={ p.Name } class="aspect-square w-full object-cover"/>
+			} else {
+				<div class="flex aspect-square w-full items-center justify-center bg-brand-50 text-6xl font-bold text-brand-500" aria-hidden="true">{ initial(p.Name) }</div>
 			}
 		</div>
-		@Grid(cards)
-		if page.TotalPages() > 1 {
-			<nav class="mt-8 flex items-center justify-center gap-3 text-sm" aria-label="Pagination">
-				if page.Page > 1 {
-					<a class="btn-secondary" href={ templ.SafeURL(listURL(f.Query, f.CategorySlug, page.Page-1)) }>Previous</a>
+	}
+}
+
+func coverSrc(p domain.Product) string {
+	if p.ThumbURL != "" {
+		return p.ThumbURL
+	}
+	return p.ImageURL
+}
+
+func fullSrc(p domain.Product) string {
+	if p.ImageURL != "" {
+		return p.ImageURL
+	}
+	return p.ThumbURL
+}
+
+func imageAlt(p domain.Product, im domain.Image) string {
+	if im.Alt != "" {
+		return im.Alt
+	}
+	return p.Name
+}
+
+func galleryData(p domain.Product) (string, error) {
+	type img struct {
+		URL string `json:"url"`
+		Alt string `json:"alt"`
+	}
+	list := make([]img, len(p.Images))
+	for i, im := range p.Images {
+		list[i] = img{URL: im.URL, Alt: imageAlt(p, im)}
+	}
+	b, err := json.Marshal(list)
+	if err != nil {
+		return "", err
+	}
+	return "{ images: " + string(b) + ", cur: " + string(mustJSON(list[0])) + " }", nil
+}
+
+func mustJSON(v any) []byte {
+	b, _ := json.Marshal(v)
+	return b
+}
+
+templ ListPage(vm ListVM, meta ui.Meta) {
+	@ui.LayoutMeta(meta) {
+		<div class="mb-6 flex flex-wrap items-end justify-between gap-4">
+			<div>
+				<h1 class="text-2xl font-bold">
+					if vm.Filter.Query != "" {
+						Results for “{ vm.Filter.Query }”
+					} else {
+						{ meta.Title }
+					}
+				</h1>
+				<p class="text-sm text-stone-600">{ resultCount(vm.Page.Total) }</p>
+			</div>
+		</div>
+		<form method="get" action="/products" class="card mb-6 grid items-end gap-3 p-4 sm:grid-cols-2 lg:grid-cols-[1fr_9rem_9rem_12rem_auto]" x-data>
+			<input type="hidden" name="category" value={ vm.Filter.CategorySlug }/>
+			<div>
+				<label class="label" for="q">Search</label>
+				<input class="input" id="q" type="search" name="q" value={ vm.Filter.Query } maxlength="100"/>
+			</div>
+			<div>
+				<label class="label" for="min">Min price { currencyHint(vm.Currency) }</label>
+				<input class="input" id="min" name="min" value={ vm.MinStr } inputmode="decimal" placeholder="0"/>
+			</div>
+			<div>
+				<label class="label" for="max">Max price { currencyHint(vm.Currency) }</label>
+				<input class="input" id="max" name="max" value={ vm.MaxStr } inputmode="decimal" placeholder="any"/>
+			</div>
+			<div>
+				<label class="label" for="sort">Sort by</label>
+				<select class="input" id="sort" name="sort" @change="$el.form.requestSubmit()">
+					for _, o := range sortOptions() {
+						<option value={ o.Value } selected?={ vm.Filter.Sort == o.Value }>{ o.Label }</option>
+					}
+				</select>
+			</div>
+			<div class="flex gap-2">
+				<button class="btn-primary" type="submit">Apply</button>
+				if filtered(vm.Filter) {
+					<a class="btn-secondary" href={ templ.SafeURL(listURL(domain.Filter{CategorySlug: vm.Filter.CategorySlug}, 1)) }>Clear</a>
 				}
-				<span class="text-stone-500">Page { strconv.Itoa(page.Page) } of { strconv.Itoa(page.TotalPages()) }</span>
-				if page.Page < page.TotalPages() {
-					<a class="btn-secondary" href={ templ.SafeURL(listURL(f.Query, f.CategorySlug, page.Page+1)) }>Next</a>
+			</div>
+		</form>
+		<div class="mb-6 flex flex-wrap gap-2 text-sm">
+			<a href={ templ.SafeURL(listURL(withCategory(vm.Filter, ""), 1)) } class={ chip(vm.Filter.CategorySlug == "") }>All</a>
+			for _, c := range vm.Cats {
+				<a href={ templ.SafeURL(listURL(withCategory(vm.Filter, c.Slug), 1)) } class={ chip(vm.Filter.CategorySlug == c.Slug) }>{ c.Name }</a>
+			}
+		</div>
+		@Grid(vm.Cards)
+		if vm.Page.TotalPages() > 1 {
+			<nav class="mt-8 flex items-center justify-center gap-3 text-sm" aria-label="Pagination">
+				if vm.Page.Page > 1 {
+					<a class="btn-secondary" rel="prev" href={ templ.SafeURL(listURL(vm.Filter, vm.Page.Page-1)) }>Previous</a>
+				}
+				<span class="text-stone-600">Page { strconv.Itoa(vm.Page.Page) } of { strconv.Itoa(vm.Page.TotalPages()) }</span>
+				if vm.Page.Page < vm.Page.TotalPages() {
+					<a class="btn-secondary" rel="next" href={ templ.SafeURL(listURL(vm.Filter, vm.Page.Page+1)) }>Next</a>
 				}
 			</nav>
 		}
 	}
 }
 
-templ DetailPage(c Card) {
-	@ui.Layout(c.Product.Name) {
-		<nav class="mb-4 text-sm text-stone-500"><a href="/products" class="hover:text-brand-600">Products</a> / { c.Product.Name }</nav>
+templ DetailPage(vm DetailVM, meta ui.Meta) {
+	{{ p, vs := vm.Product, vm.Variants }}
+	@ui.LayoutMeta(meta) {
+		<nav class="mb-4 text-sm text-stone-500"><a href="/products" class="hover:text-brand-700">Products</a> / { p.Name }</nav>
 		<div class="grid gap-8 md:grid-cols-2">
-			<div class="card overflow-hidden">
-				@Image(c.Product, "aspect-square w-full")
-			</div>
+			@Gallery(p)
 			<div>
-				<h1 class="text-3xl font-bold tracking-tight">{ c.Product.Name }</h1>
-				<p class="mt-2 text-2xl font-semibold text-brand-700">{ money.Format(c.Product.PriceCents, c.Product.Currency) }</p>
-				<p class="mt-4 whitespace-pre-line text-stone-600">{ c.Product.Description }</p>
-				if c.InStock {
-					<form method="post" action="/cart/items" class="mt-8 flex items-center gap-4" x-data="{ qty: 1 }">
-						<input type="hidden" name="product_id" value={ c.Product.ID.String() }/>
-						<input type="hidden" name="quantity" :value="qty"/>
-						<div class="inline-flex items-center rounded-lg border border-stone-300 bg-white">
-							<button type="button" class="px-3 py-2 text-lg" @click="qty = Math.max(1, qty - 1)" aria-label="Decrease quantity">−</button>
-							<span class="w-8 text-center text-sm font-medium" x-text="qty">1</span>
-							<button type="button" class="px-3 py-2 text-lg" @click="qty = Math.min(20, qty + 1)" aria-label="Increase quantity">+</button>
-						</div>
-						<button class="btn-primary" type="submit">Add to cart</button>
+				<h1 class="text-3xl font-bold tracking-tight">{ p.Name }</h1>
+				if vm.CanWish {
+					<form method="post" action={ templ.SafeURL(wishAction(p.ID.String(), vm.Wished)) } class="mt-2">
+						<input type="hidden" name="next" value={ "/products/" + p.Slug }/>
+						<button type="submit" class="text-sm font-medium text-brand-700 hover:underline" aria-pressed={ strconv.FormatBool(vm.Wished) }>
+							if vm.Wished {
+								♥ Saved to wishlist (remove)
+							} else {
+								♡ Save to wishlist
+							}
+						</button>
 					</form>
+				}
+				if len(vs) == 0 {
+					<p class="mt-2 text-2xl font-semibold text-brand-700">{ money.Format(p.PriceCents, p.Currency) }</p>
+					<p class="mt-4 whitespace-pre-line text-stone-600">{ p.Description }</p>
+					<p class="mt-8 badge bg-stone-100 px-3 py-1.5 text-sm text-stone-600">Currently unavailable</p>
 				} else {
-					<p class="mt-8 badge bg-stone-100 px-3 py-1.5 text-sm text-stone-600">Currently sold out</p>
+					<form method="post" action="/cart/items" x-data={ detailData(vs) }>
+						<p class="mt-2 text-2xl font-semibold text-brand-700" x-text="v.price">{ vs[0].Price }</p>
+						<p class="mt-4 whitespace-pre-line text-stone-600">{ p.Description }</p>
+						<input type="hidden" name="variant_id" :value="v.id" value={ vs[0].ID }/>
+						<input type="hidden" name="quantity" :value="qty" value="1"/>
+						if len(vs) > 1 || vs[0].Label != "" {
+							<fieldset class="mt-6">
+								<legend class="label">{ optionName(p) }</legend>
+								<div class="flex flex-wrap gap-2">
+									for i, opt := range vs {
+										<button
+											type="button"
+											@click={ "sel = " + strconv.Itoa(i) }
+											:aria-pressed={ "sel === " + strconv.Itoa(i) }
+											:class={ "sel === " + strconv.Itoa(i) + " ? 'border-brand-700 bg-brand-700 text-white' : 'border-stone-300 bg-white hover:border-brand-500'" }
+											class="rounded-lg border px-3 py-1.5 text-sm font-medium disabled:cursor-not-allowed disabled:text-stone-500 disabled:line-through"
+											disabled?={ !opt.InStock }
+										>{ opt.Label }</button>
+									}
+								</div>
+							</fieldset>
+						}
+						<p class="mt-3 text-sm" x-show="!v.in_stock" x-cloak><span class="badge bg-stone-100 px-3 py-1.5 text-stone-600">This option is sold out</span></p>
+						<div class="mt-6 flex items-center gap-4" x-show="v.in_stock">
+							<div class="inline-flex items-center rounded-lg border border-stone-300 bg-white">
+								<button type="button" class="px-3 py-2 text-lg" @click="qty = Math.max(1, qty - 1)" aria-label="Decrease quantity">−</button>
+								<span class="w-8 text-center text-sm font-medium" x-text="qty">1</span>
+								<button type="button" class="px-3 py-2 text-lg" @click="qty = Math.min(20, qty + 1)" aria-label="Increase quantity">+</button>
+							</div>
+							<button class="btn-primary" type="submit" :disabled="!v.in_stock">Add to cart</button>
+						</div>
+						if !anyInStock(vs) {
+							<p class="mt-6 badge bg-stone-100 px-3 py-1.5 text-sm text-stone-600" x-show="false">Sold out</p>
+						}
+					</form>
 				}
 			</div>
 		</div>
+		if vm.Reviews != nil {
+			@vm.Reviews
+		}
+		if len(vm.Related) > 0 {
+			<section class="mt-12" aria-labelledby="related-h">
+				<h2 id="related-h" class="mb-4 text-xl font-bold">You may also like</h2>
+				@Grid(vm.Related)
+			</section>
+		}
 	}
+}
+
+// detailData is the Alpine state for the variant picker: the variants and the selected one.
+func detailData(vs []VariantView) (string, error) {
+	b, err := json.Marshal(vs)
+	if err != nil {
+		return "", err
+	}
+	first := 0
+	for i, v := range vs {
+		if v.InStock {
+			first = i
+			break
+		}
+	}
+	return "{ qty: 1, sel: " + strconv.Itoa(first) + ", variants: " + string(b) + ", get v() { return this.variants[this.sel] } }", nil
+}
+
+func optionName(p domain.Product) string {
+	if p.OptionName != "" {
+		return p.OptionName
+	}
+	return "Option"
+}
+
+func anyInStock(vs []VariantView) bool {
+	for _, v := range vs {
+		if v.InStock {
+			return true
+		}
+	}
+	return false
 }
 
 func chip(active bool) string {
 	base := "rounded-full border px-3 py-1 "
 	if active {
-		return base + "border-brand-600 bg-brand-600 text-white"
+		return base + "border-brand-700 bg-brand-700 text-white"
 	}
 	return base + "border-stone-300 bg-white hover:border-brand-500"
 }
 
-func listURL(q, category string, page int) string {
+func listURL(f domain.Filter, page int) string {
 	v := url.Values{}
-	if q != "" {
-		v.Set("q", q)
+	if f.Query != "" {
+		v.Set("q", f.Query)
 	}
-	if category != "" {
-		v.Set("category", category)
+	if f.CategorySlug != "" {
+		v.Set("category", f.CategorySlug)
+	}
+	if f.Sort != "" {
+		v.Set("sort", f.Sort)
+	}
+	if f.MinPriceCents > 0 {
+		v.Set("min", money.Decimal(f.MinPriceCents))
+	}
+	if f.MaxPriceCents > 0 {
+		v.Set("max", money.Decimal(f.MaxPriceCents))
 	}
 	if page > 1 {
 		v.Set("page", strconv.Itoa(page))
@@ -147,9 +341,52 @@ func listURL(q, category string, page int) string {
 	return "/products?" + v.Encode()
 }
 
+func withCategory(f domain.Filter, slug string) domain.Filter {
+	f.CategorySlug = slug
+	return f
+}
+
+func filtered(f domain.Filter) bool {
+	return f.Query != "" || f.Sort != "" || f.MinPriceCents > 0 || f.MaxPriceCents > 0
+}
+
+func sortOptions() []struct{ Value, Label string } { return domain.SortOptions }
+
+func currencyHint(c string) string {
+	if c == "" {
+		return ""
+	}
+	return "(" + c + ")"
+}
+
+func resultCount(n int) string {
+	if n == 1 {
+		return "1 product"
+	}
+	return strconv.Itoa(n) + " products"
+}
+
 func initial(name string) string {
 	for _, r := range name {
 		return string(r)
 	}
 	return "?"
+}
+
+func wishAction(id string, wished bool) string {
+	if wished {
+		return "/wishlist/" + id + "/remove"
+	}
+	return "/wishlist/" + id
+}
+
+templ WishlistPage(cards []Card) {
+	@ui.Layout("Wishlist") {
+		<h1 class="mb-4 text-2xl font-bold">Your wishlist</h1>
+		if len(cards) == 0 {
+			<p class="rounded-xl border border-dashed border-stone-300 p-10 text-center text-stone-500">Nothing saved yet. <a class="font-medium text-brand-700" href="/products">Browse the shop</a>.</p>
+		} else {
+			@Grid(cards)
+		}
+	}
 }

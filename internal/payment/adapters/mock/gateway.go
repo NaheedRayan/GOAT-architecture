@@ -28,6 +28,11 @@ func (*Gateway) Checkout(_ context.Context, p domain.Payment) (domain.Session, e
 	return domain.Session{URL: "/pay/" + p.ID.String() + "/mock"}, nil
 }
 
+// Refund always succeeds in the mock provider.
+func (*Gateway) Refund(_ context.Context, p domain.Payment) (string, error) {
+	return "mock_refund_" + p.ID.String(), nil
+}
+
 // Sign returns the signature a sender must put in SignatureHeader.
 func (g *Gateway) Sign(body []byte) string {
 	m := hmac.New(sha256.New, g.secret)

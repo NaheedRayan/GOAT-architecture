@@ -33,6 +33,13 @@ type Line struct {
 
 func (l Line) SubtotalCents() int64 { return l.UnitPriceCents * int64(l.Quantity) }
 
+// Abandoned is a signed-in user's cart that went quiet.
+type Abandoned struct {
+	UserID uuid.UUID
+	Owner  string
+	Items  int
+}
+
 type View struct {
 	Lines      []Line
 	TotalCents int64

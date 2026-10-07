@@ -42,3 +42,21 @@ ON CONFLICT (cart_id, variant_id) DO UPDATE SET quantity = LEAST(20, cart.cart_i
 
 -- name: PurgeGuestCarts :execrows
 DELETE FROM cart.carts WHERE owner LIKE 'guest:%' AND updated_at < $1;
+
+-- name: ClaimAbandonedCarts :many
+-- Signed-in users' carts that went quiet: idle for a while, not too old, with items, and not yet
+-- reminded since they last changed. SKIP LOCKED lets several instances share the work.
+SELECT c.id, c.owner, c.updated_at,
+       (SELECT COALESCE(sum(quantity), 0) FROM cart.cart_items i WHERE i.cart_id = c.id)::bigint AS items
+FROM cart.carts c
+WHERE c.owner LIKE 'user:%'
+  AND c.updated_at < sqlc.arg(idle_before)
+  AND c.updated_at > sqlc.arg(not_older_than)
+  AND (c.reminded_at IS NULL OR c.reminded_at < c.updated_at)
+  AND EXISTS (SELECT 1 FROM cart.cart_items i WHERE i.cart_id = c.id)
+ORDER BY c.updated_at
+LIMIT sqlc.arg(max_rows)
+FOR UPDATE OF c SKIP LOCKED;
+
+-- name: MarkCartReminded :exec
+UPDATE cart.carts SET reminded_at = now() WHERE id = $1;

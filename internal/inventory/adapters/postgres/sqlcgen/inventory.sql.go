@@ -171,6 +171,44 @@ func (q *Queries) InsertReservation(ctx context.Context, arg InsertReservationPa
 	return err
 }
 
+const listCommittedByOrder = `-- name: ListCommittedByOrder :many
+SELECT id, variant_id, lot_id, quantity FROM inventory.reservations
+WHERE order_id = $1 AND status = 'committed'
+FOR UPDATE
+`
+
+type ListCommittedByOrderRow struct {
+	ID        uuid.UUID
+	VariantID uuid.UUID
+	LotID     uuid.UUID
+	Quantity  int32
+}
+
+func (q *Queries) ListCommittedByOrder(ctx context.Context, orderID uuid.UUID) ([]ListCommittedByOrderRow, error) {
+	rows, err := q.db.Query(ctx, listCommittedByOrder, orderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCommittedByOrderRow
+	for rows.Next() {
+		var i ListCommittedByOrderRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.VariantID,
+			&i.LotID,
+			&i.Quantity,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listLotsByVariant = `-- name: ListLotsByVariant :many
 SELECT id, variant_id, label, quantity, created_at FROM inventory.stock_lots WHERE variant_id = $1 ORDER BY created_at DESC
 `
@@ -256,6 +294,46 @@ func (q *Queries) LockLotsForVariant(ctx context.Context, variantID uuid.UUID) (
 	for rows.Next() {
 		var i LockLotsForVariantRow
 		if err := rows.Scan(&i.ID, &i.Quantity); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lowStock = `-- name: LowStock :many
+SELECT variant_id, (sum(quantity))::bigint AS available
+FROM inventory.stock_lots
+GROUP BY variant_id
+HAVING sum(quantity) <= $1::bigint
+ORDER BY available, variant_id
+LIMIT $2
+`
+
+type LowStockParams struct {
+	Threshold int64
+	MaxRows   int32
+}
+
+type LowStockRow struct {
+	VariantID uuid.UUID
+	Available int64
+}
+
+// Variants that have had stock but are at or below the threshold, lowest first.
+func (q *Queries) LowStock(ctx context.Context, arg LowStockParams) ([]LowStockRow, error) {
+	rows, err := q.db.Query(ctx, lowStock, arg.Threshold, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LowStockRow
+	for rows.Next() {
+		var i LowStockRow
+		if err := rows.Scan(&i.VariantID, &i.Available); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

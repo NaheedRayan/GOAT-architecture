@@ -28,6 +28,60 @@ func (q *Queries) AddCartItem(ctx context.Context, arg AddCartItemParams) error 
 	return err
 }
 
+const claimAbandonedCarts = `-- name: ClaimAbandonedCarts :many
+SELECT c.id, c.owner, c.updated_at,
+       (SELECT COALESCE(sum(quantity), 0) FROM cart.cart_items i WHERE i.cart_id = c.id)::bigint AS items
+FROM cart.carts c
+WHERE c.owner LIKE 'user:%'
+  AND c.updated_at < $1
+  AND c.updated_at > $2
+  AND (c.reminded_at IS NULL OR c.reminded_at < c.updated_at)
+  AND EXISTS (SELECT 1 FROM cart.cart_items i WHERE i.cart_id = c.id)
+ORDER BY c.updated_at
+LIMIT $3
+FOR UPDATE OF c SKIP LOCKED
+`
+
+type ClaimAbandonedCartsParams struct {
+	IdleBefore   time.Time
+	NotOlderThan time.Time
+	MaxRows      int32
+}
+
+type ClaimAbandonedCartsRow struct {
+	ID        uuid.UUID
+	Owner     string
+	UpdatedAt time.Time
+	Items     int64
+}
+
+// Signed-in users' carts that went quiet: idle for a while, not too old, with items, and not yet
+// reminded since they last changed. SKIP LOCKED lets several instances share the work.
+func (q *Queries) ClaimAbandonedCarts(ctx context.Context, arg ClaimAbandonedCartsParams) ([]ClaimAbandonedCartsRow, error) {
+	rows, err := q.db.Query(ctx, claimAbandonedCarts, arg.IdleBefore, arg.NotOlderThan, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ClaimAbandonedCartsRow
+	for rows.Next() {
+		var i ClaimAbandonedCartsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Owner,
+			&i.UpdatedAt,
+			&i.Items,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const clearCart = `-- name: ClearCart :exec
 DELETE FROM cart.cart_items WHERE cart_id = $1
 `
@@ -123,6 +177,15 @@ func (q *Queries) LockCartByOwner(ctx context.Context, owner string) (uuid.UUID,
 	var id uuid.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const markCartReminded = `-- name: MarkCartReminded :exec
+UPDATE cart.carts SET reminded_at = now() WHERE id = $1
+`
+
+func (q *Queries) MarkCartReminded(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, markCartReminded, id)
+	return err
 }
 
 const mergeCartItems = `-- name: MergeCartItems :exec

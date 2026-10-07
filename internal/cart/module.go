@@ -2,6 +2,7 @@ package cart
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -14,6 +15,8 @@ import (
 	"github.com/NaheedRayan/goat-architecture/internal/cart/adapters/postgres"
 	"github.com/NaheedRayan/goat-architecture/internal/cart/app"
 	"github.com/NaheedRayan/goat-architecture/internal/catalog"
+	"github.com/NaheedRayan/goat-architecture/internal/identity"
+	"github.com/NaheedRayan/goat-architecture/internal/platform/outbox"
 )
 
 type Options struct {
@@ -36,6 +39,10 @@ func New(o Options) *Module {
 
 func (m *Module) API() API { return apiImpl{m.svc} }
 
+// OwnerFor finds the cart of the current visitor: the signed-in user's, or an
+// anonymous visitor's guest cart. ok is false when the visitor has no cart yet.
+func (m *Module) OwnerFor(r *http.Request) (string, bool) { return httpadapter.OwnerFor(r) }
+
 func (m *Module) Routes(r chi.Router) { m.h.Routes(r) }
 
 // Middleware must run after authentication.
@@ -45,6 +52,9 @@ type apiImpl struct{ s *app.Service }
 
 func (a apiImpl) View(ctx context.Context, owner string) (View, error) { return a.s.View(ctx, owner) }
 func (a apiImpl) Clear(ctx context.Context, owner string) error        { return a.s.Clear(ctx, owner) }
+func (a apiImpl) ClaimAbandoned(ctx context.Context, idleFor, maxAge time.Duration, limit int) ([]Abandoned, error) {
+	return a.s.ClaimAbandoned(ctx, idleFor, maxAge, limit)
+}
 
 // catalogLookup adapts the catalog module's API to the cart's own port.
 type catalogLookup struct{ api catalog.API }
@@ -78,4 +88,17 @@ func (m *Module) Background(ctx context.Context) {
 		case <-t.C:
 		}
 	}
+}
+
+// RegisterHandlers subscribes the cart module to account deletion.
+func (m *Module) RegisterHandlers(w *outbox.Worker) {
+	w.Handle(identity.EventAccountDeleted, func(ctx context.Context, j outbox.Job) error {
+		var p struct {
+			UserID uuid.UUID `json:"user_id"`
+		}
+		if err := json.Unmarshal(j.Payload, &p); err != nil {
+			return err
+		}
+		return m.svc.DeleteUserCart(ctx, p.UserID)
+	})
 }

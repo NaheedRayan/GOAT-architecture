@@ -111,9 +111,27 @@ See `.env.example` (`TRUST_PROXY`, `PUBLIC_URL`, `DB_MAX_CONNS` are the operatio
 
 See `docs/AUDIT.md` for the engineering audit: what was found, what was fixed, and what was deliberately left alone.
 
-## Known gaps / next steps
+## Reviews, wishlist, operations
 
-- No real payment gateway yet (production refuses the mock), and no automated refund when a late payment hits a cancelled order.
-- No email verification or password reset.
-- No product image upload (admin enters an image URL).
-- Single currency per deployment (`CURRENCY`); no tax, shipping rates or discounts.
+- **Reviews** are limited to customers whose order was shipped (verified-purchase badge), one per product (writing again edits it),
+  moderated at `/admin/reviews` (hide/publish/delete; a hidden review stays hidden after an edit). Ratings feed product cards and the
+  page's schema.org `aggregateRating`. Text is always escaped. **Wishlist**: sign-in required, `/wishlist`, capped at 200 items.
+  Both are included in the personal-data export and erased with the account.
+- **Observability**: `GET /readyz` (database reachable and job queue not stalled), `GET /healthz`, and Prometheus `GET /metrics`
+  (request counts/latency, in-flight, queue depth, dead jobs), enabled only when `METRICS_TOKEN` is set (send it as a Bearer token).
+- **Backups**: `scripts/backup.sh` dumps the database; `scripts/backup.sh verify` backs up, restores into a scratch database and compares row counts, so
+  you know the backup works before you need it. Uploaded images live in `UPLOAD_DIR`: back that directory up too.
+- **Load test**: `go run ./cmd/loadtest -base http://localhost:8080 -c 50 -d 20s` (reads public pages only; prints p50/p95/p99, exits non-zero on 5xx).
+  Overselling under concurrent checkout is covered by `TestNoOversellUnderConcurrentCheckout`.
+- **Staging**: `docker-compose.staging.yml` runs the real image with Mailpit capturing email.
+
+## What is deliberately not built
+
+These need a decision or credentials only you can provide, so they are stubs or absent rather than guessed at:
+
+- **A card payment gateway.** Cash on delivery works end to end (including refunds and returns). For cards, implement `payment/app.Gateway`
+  for your provider (Stripe, SSLCommerz, bKash...), plus its webhook. Until then run production with `PAYMENT_PROVIDER=none PAYMENT_METHODS=cod`.
+- **Legal text.** Terms, privacy, returns and shipping pages are editable in `/admin/pages` and start as *draft templates with [[placeholders]]*, not legal advice;
+  get them reviewed before publishing.
+- **SMS notifications** (email only), **loyalty/points**, **multiple currencies**, **translated UI (e.g. Bangla)**: product decisions, not defaults.
+- **Distributed rate limiting**: limits are per process; use an edge limiter if you run several instances.

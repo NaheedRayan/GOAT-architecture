@@ -57,10 +57,12 @@ test:
 
 TEST_DB_URL = $(subst /goat?,/goat_test?,$(DATABASE_URL))
 
-# Runs against a separate, auto-created goat_test database (needs `make up`).
+# Runs against a separate goat_test database that is dropped and re-created each time, so
+# tests start from a clean slate and leftovers from earlier runs cannot hide or cause failures
+# (needs `make up`).
 test-integration:
-	docker compose exec -T postgres psql -U goat -d postgres -tc "SELECT 1 FROM pg_database WHERE datname='goat_test'" | grep -q 1 || \
-		docker compose exec -T postgres psql -U goat -d postgres -c "CREATE DATABASE goat_test"
+	docker compose exec -T postgres psql -U goat -d postgres -c "DROP DATABASE IF EXISTS goat_test WITH (FORCE)"
+	docker compose exec -T postgres psql -U goat -d postgres -c "CREATE DATABASE goat_test"
 	DATABASE_URL="$(TEST_DB_URL)" go run ./cmd/migrate
 	TEST_DATABASE_URL="$(TEST_DB_URL)" go test -race -count=1 ./...
 

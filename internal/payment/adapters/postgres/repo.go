@@ -22,12 +22,12 @@ func (r *Repo) q(ctx context.Context) *sqlcgen.Queries { return sqlcgen.New(db.Q
 
 func toPayment(p sqlcgen.PaymentPayment) domain.Payment {
 	return domain.Payment{ID: p.ID, OrderID: p.OrderID, UserID: p.UserID, AmountCents: p.AmountCents,
-		Currency: p.Currency, Provider: p.Provider, ProviderRef: p.ProviderRef, Status: p.Status}
+		Currency: p.Currency, Provider: p.Provider, Method: p.Method, ProviderRef: p.ProviderRef, Status: p.Status}
 }
 
 func (r *Repo) Insert(ctx context.Context, p domain.Payment) error {
 	return r.q(ctx).InsertPayment(ctx, sqlcgen.InsertPaymentParams{
-		ID: p.ID, OrderID: p.OrderID, UserID: p.UserID, AmountCents: p.AmountCents, Currency: p.Currency, Provider: p.Provider,
+		ID: p.ID, OrderID: p.OrderID, UserID: p.UserID, AmountCents: p.AmountCents, Currency: p.Currency, Provider: p.Provider, Method: p.Method,
 	})
 }
 
@@ -41,6 +41,14 @@ func (r *Repo) Get(ctx context.Context, paymentID uuid.UUID) (domain.Payment, er
 
 func (r *Repo) Settle(ctx context.Context, paymentID uuid.UUID, status, providerRef string) (domain.Payment, bool, error) {
 	p, err := r.q(ctx).SettlePayment(ctx, sqlcgen.SettlePaymentParams{ID: paymentID, Status: status, ProviderRef: providerRef})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Payment{}, false, nil
+	}
+	return toPayment(p), err == nil, err
+}
+
+func (r *Repo) Refund(ctx context.Context, paymentID uuid.UUID, providerRef string) (domain.Payment, bool, error) {
+	p, err := r.q(ctx).RefundPayment(ctx, sqlcgen.RefundPaymentParams{ID: paymentID, ProviderRef: providerRef})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Payment{}, false, nil
 	}

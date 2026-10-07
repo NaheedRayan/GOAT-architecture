@@ -12,7 +12,7 @@ import (
 )
 
 const getPayment = `-- name: GetPayment :one
-SELECT id, order_id, user_id, amount_cents, currency, provider, provider_ref, status, created_at, updated_at FROM payment.payments WHERE id = $1
+SELECT id, order_id, user_id, amount_cents, currency, provider, provider_ref, status, created_at, updated_at, method FROM payment.payments WHERE id = $1
 `
 
 func (q *Queries) GetPayment(ctx context.Context, id uuid.UUID) (PaymentPayment, error) {
@@ -29,13 +29,14 @@ func (q *Queries) GetPayment(ctx context.Context, id uuid.UUID) (PaymentPayment,
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Method,
 	)
 	return i, err
 }
 
 const insertPayment = `-- name: InsertPayment :exec
-INSERT INTO payment.payments (id, order_id, user_id, amount_cents, currency, provider)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO payment.payments (id, order_id, user_id, amount_cents, currency, provider, method)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
 
 type InsertPaymentParams struct {
@@ -45,6 +46,7 @@ type InsertPaymentParams struct {
 	AmountCents int64
 	Currency    string
 	Provider    string
+	Method      string
 }
 
 func (q *Queries) InsertPayment(ctx context.Context, arg InsertPaymentParams) error {
@@ -55,8 +57,40 @@ func (q *Queries) InsertPayment(ctx context.Context, arg InsertPaymentParams) er
 		arg.AmountCents,
 		arg.Currency,
 		arg.Provider,
+		arg.Method,
 	)
 	return err
+}
+
+const refundPayment = `-- name: RefundPayment :one
+UPDATE payment.payments SET status = 'refunded', provider_ref = CASE WHEN $1::text <> '' THEN $1::text ELSE provider_ref END, updated_at = now()
+WHERE id = $2 AND status = 'succeeded'
+RETURNING id, order_id, user_id, amount_cents, currency, provider, provider_ref, status, created_at, updated_at, method
+`
+
+type RefundPaymentParams struct {
+	ProviderRef string
+	ID          uuid.UUID
+}
+
+// Only a succeeded payment can be refunded (once).
+func (q *Queries) RefundPayment(ctx context.Context, arg RefundPaymentParams) (PaymentPayment, error) {
+	row := q.db.QueryRow(ctx, refundPayment, arg.ProviderRef, arg.ID)
+	var i PaymentPayment
+	err := row.Scan(
+		&i.ID,
+		&i.OrderID,
+		&i.UserID,
+		&i.AmountCents,
+		&i.Currency,
+		&i.Provider,
+		&i.ProviderRef,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Method,
+	)
+	return i, err
 }
 
 const settlePayment = `-- name: SettlePayment :one
@@ -65,7 +99,7 @@ SET status = $1::text,
     provider_ref = CASE WHEN $2::text <> '' THEN $2::text ELSE provider_ref END,
     updated_at = now()
 WHERE id = $3 AND status = 'pending'
-RETURNING id, order_id, user_id, amount_cents, currency, provider, provider_ref, status, created_at, updated_at
+RETURNING id, order_id, user_id, amount_cents, currency, provider, provider_ref, status, created_at, updated_at, method
 `
 
 type SettlePaymentParams struct {
@@ -89,6 +123,7 @@ func (q *Queries) SettlePayment(ctx context.Context, arg SettlePaymentParams) (P
 		&i.Status,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Method,
 	)
 	return i, err
 }

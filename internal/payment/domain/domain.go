@@ -11,6 +11,10 @@ const (
 	StatusPending   = "pending"
 	StatusSucceeded = "succeeded"
 	StatusFailed    = "failed"
+	StatusRefunded  = "refunded"
+
+	MethodCard = "card"
+	MethodCOD  = "cod"
 )
 
 type Payment struct {
@@ -20,6 +24,7 @@ type Payment struct {
 	AmountCents int64
 	Currency    string
 	Provider    string
+	Method      string // MethodCard or MethodCOD
 	ProviderRef string
 	Status      string
 }
@@ -43,6 +48,8 @@ type WebhookEvent struct {
 
 var (
 	ErrNotFound         = errors.New("payment not found")
+	ErrNotRefundable    = errors.New("only a payment that succeeded can be refunded")
+	ErrNotCOD           = errors.New("not a cash-on-delivery payment")
 	ErrAlreadySettled   = errors.New("payment is no longer pending")
 	ErrInvalidSignature = errors.New("invalid webhook signature")
 )

@@ -1,0 +1,417 @@
+package admin
+
+import (
+	"fmt"
+	"strconv"
+	"time"
+
+	"github.com/NaheedRayan/goat-architecture/internal/platform/audit"
+	"github.com/NaheedRayan/goat-architecture/internal/platform/money"
+	"github.com/NaheedRayan/goat-architecture/internal/platform/ui"
+	"github.com/NaheedRayan/goat-architecture/internal/promotion"
+	"github.com/NaheedRayan/goat-architecture/internal/shipping"
+)
+
+// ---------------- users ----------------
+
+templ UsersPage(vm UsersVM) {
+	@shell("Users") {
+		<h1 class="mb-4 text-xl font-bold">Users</h1>
+		@ui.FieldError(vm.Message)
+		<form method="get" action="/admin/users" class="card mb-4 mt-2 flex flex-wrap items-end gap-3 p-4">
+			<div class="min-w-48 flex-1">
+				<label class="label" for="uq">Search name or email</label>
+				<input class="input" id="uq" name="q" value={ vm.Query } maxlength="100"/>
+			</div>
+			<div>
+				<label class="label" for="urole">Role</label>
+				<select class="input" id="urole" name="role">
+					<option value="">All</option>
+					for _, r := range []string{"customer", "staff", "admin"} {
+						<option value={ r } selected?={ vm.Role == r }>{ r }</option>
+					}
+				</select>
+			</div>
+			<button class="btn-primary" type="submit">Filter</button>
+		</form>
+		<div class="card overflow-x-auto">
+			<table class="w-full text-left text-sm">
+				<thead class="border-b border-stone-200 bg-stone-50 text-xs uppercase text-stone-500">
+					<tr><th class="p-3">User</th><th class="p-3">Role</th><th class="p-3">Status</th><th class="p-3">Joined</th><th class="p-3"></th></tr>
+				</thead>
+				<tbody class="divide-y divide-stone-100">
+					for _, u := range vm.Users {
+						<tr>
+							<td class="p-3">{ u.Name }<span class="block text-xs text-stone-500">{ u.Email }
+								if !u.EmailVerified {
+									· unverified
+								}
+								if u.Guest {
+									· guest
+								}
+							</span></td>
+							<td class="p-3">
+								if u.ID == vm.Self {
+									<span class="badge bg-stone-100 text-stone-600">{ u.Role } (you)</span>
+								} else {
+									<form method="post" action={ templ.SafeURL("/admin/users/" + u.ID.String() + "/role?" + vm.Params) } class="flex items-center gap-2">
+										<label class="sr-only" for={ "role-" + u.ID.String() }>Role for { u.Email }</label>
+										<select class="input w-32" id={ "role-" + u.ID.String() } name="role">
+											for _, r := range []string{"customer", "staff", "admin"} {
+												<option value={ r } selected?={ u.Role == r }>{ r }</option>
+											}
+										</select>
+										<button class="btn-secondary" type="submit">Set</button>
+									</form>
+								}
+							</td>
+							<td class="p-3">
+								if u.Disabled {
+									<span class="badge bg-red-100 text-red-700">Disabled</span>
+								} else {
+									<span class="badge bg-emerald-100 text-emerald-800">Active</span>
+								}
+							</td>
+							<td class="p-3 whitespace-nowrap text-stone-500">{ u.CreatedAt.Format("2 Jan 2006") }</td>
+							<td class="p-3 text-right">
+								if u.ID != vm.Self {
+									<form method="post" action={ templ.SafeURL("/admin/users/" + u.ID.String() + "/status?" + vm.Params) }>
+										if u.Disabled {
+											<input type="hidden" name="action" value="enable"/>
+											<button class="font-medium text-brand-700 hover:underline" type="submit">Enable</button>
+										} else {
+											<input type="hidden" name="action" value="disable"/>
+											<button class="font-medium text-red-600 hover:underline" type="submit">Disable</button>
+										}
+									</form>
+								}
+							</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+			if len(vm.Users) == 0 {
+				<p class="p-6 text-center text-stone-500">No users match.</p>
+			}
+		</div>
+		@pager("/admin/users", vm.Params, vm.Page, vm.HasNext)
+	}
+}
+
+templ pager(base, params string, page int, hasNext bool) {
+	if page > 1 || hasNext {
+		<nav class="mt-4 flex items-center justify-center gap-3 text-sm" aria-label="Pagination">
+			if page > 1 {
+				<a class="btn-secondary" href={ templ.SafeURL(pageURL(base, params, page-1)) }>Previous</a>
+			}
+			<span class="text-stone-500">Page { strconv.Itoa(page) }</span>
+			if hasNext {
+				<a class="btn-secondary" href={ templ.SafeURL(pageURL(base, params, page+1)) }>Next</a>
+			}
+		</nav>
+	}
+}
+
+func pageURL(base, params string, page int) string {
+	q := params
+	if page > 1 {
+		if q != "" {
+			q += "&"
+		}
+		q += "page=" + strconv.Itoa(page)
+	}
+	if q == "" {
+		return base
+	}
+	return base + "?" + q
+}
+
+// ---------------- delivery methods ----------------
+
+templ ShippingPage(methods []shipping.Method, msg string) {
+	@shell("Delivery") {
+		<h1 class="mb-1 text-xl font-bold">Delivery methods</h1>
+		<p class="mb-4 text-sm text-stone-500">Shoppers choose one at checkout. With no active method, delivery is free and no choice is shown.</p>
+		@ui.FieldError(msg)
+		<div class="mt-2 space-y-4">
+			for _, m := range methods {
+				<form method="post" action={ templ.SafeURL("/admin/shipping/" + m.ID.String()) } class="card grid items-end gap-3 p-4 sm:grid-cols-2 lg:grid-cols-[1.2fr_1.5fr_7rem_7rem_5rem_5rem_auto_auto]">
+					@methodFields(m, m.ID.String())
+					<button class="btn-secondary" type="submit">Save</button>
+				</form>
+				<form method="post" action={ templ.SafeURL("/admin/shipping/" + m.ID.String() + "/delete") } data-msg={ "Delete " + m.Name + "?" } @submit="if (!confirm($el.dataset.msg)) $event.preventDefault()" class="-mt-3 text-right">
+					<button class="text-xs text-red-600 hover:underline" type="submit">Delete { m.Name }</button>
+				</form>
+			}
+		</div>
+		<h2 class="mb-2 mt-8 text-lg font-semibold">Add a method</h2>
+		<form method="post" action="/admin/shipping" class="card grid items-end gap-3 p-4 sm:grid-cols-2 lg:grid-cols-[1.2fr_1.5fr_7rem_7rem_5rem_5rem_auto_auto]">
+			@methodFields(shipping.Method{Active: true}, "new")
+			<button class="btn-primary" type="submit">Add</button>
+		</form>
+	}
+}
+
+templ methodFields(m shipping.Method, key string) {
+	<div><label class="label" for={ "n-" + key }>Name</label><input class="input" id={ "n-" + key } name="name" value={ m.Name } maxlength="80" required/></div>
+	<div><label class="label" for={ "d-" + key }>Description</label><input class="input" id={ "d-" + key } name="description" value={ m.Description } maxlength="200"/></div>
+	<div><label class="label" for={ "p-" + key }>Price</label><input class="input" id={ "p-" + key } name="price" value={ money.Decimal(m.PriceCents) } inputmode="decimal" required/></div>
+	<div><label class="label" for={ "f-" + key }>Free over</label><input class="input" id={ "f-" + key } name="free_over" value={ freeOver(m) } inputmode="decimal" placeholder="never"/></div>
+	<div><label class="label" for={ "a-" + key }>Min days</label><input class="input" id={ "a-" + key } name="min_days" value={ strconv.Itoa(m.MinDays) } inputmode="numeric"/></div>
+	<div><label class="label" for={ "b-" + key }>Max days</label><input class="input" id={ "b-" + key } name="max_days" value={ strconv.Itoa(m.MaxDays) } inputmode="numeric"/></div>
+	<label class="flex items-center gap-2 pb-2 text-sm"><input type="checkbox" name="active" value="1" checked?={ m.Active }/> Active</label>
+}
+
+func freeOver(m shipping.Method) string {
+	if m.FreeOverCents == nil {
+		return ""
+	}
+	return money.Decimal(*m.FreeOverCents)
+}
+
+// ---------------- coupons ----------------
+
+templ CouponsPage(cs []promotion.Coupon, msg string) {
+	@shell("Coupons") {
+		<h1 class="mb-1 text-xl font-bold">Coupons</h1>
+		<p class="mb-4 text-sm text-stone-500">Shoppers enter a code at checkout. A coupon that has been used can be deactivated but not deleted.</p>
+		@ui.FieldError(msg)
+		<div class="card mt-2 overflow-x-auto">
+			<table class="w-full text-left text-sm">
+				<thead class="border-b border-stone-200 bg-stone-50 text-xs uppercase text-stone-500">
+					<tr><th class="p-3">Code</th><th class="p-3">Offer</th><th class="p-3">Used</th><th class="p-3">Valid</th><th class="p-3">Status</th><th class="p-3"></th></tr>
+				</thead>
+				<tbody class="divide-y divide-stone-100">
+					for _, c := range cs {
+						<tr>
+							<td class="p-3 font-mono font-medium">{ c.Code }</td>
+							<td class="p-3">{ couponOffer(c) }
+								if c.MinSubtotal > 0 {
+									<span class="block text-xs text-stone-500">min. { money.Decimal(c.MinSubtotal) }</span>
+								}
+							</td>
+							<td class="p-3">{ couponUse(c) }</td>
+							<td class="p-3 whitespace-nowrap text-stone-600">{ couponWindow(c) }</td>
+							<td class="p-3">
+								if c.Active {
+									<span class="badge bg-emerald-100 text-emerald-800">Active</span>
+								} else {
+									<span class="badge bg-stone-200 text-stone-600">Inactive</span>
+								}
+							</td>
+							<td class="p-3 text-right">
+								<details>
+									<summary class="cursor-pointer text-brand-700">Edit</summary>
+									<form method="post" action={ templ.SafeURL("/admin/coupons/" + c.ID.String()) } class="mt-2 grid gap-2 text-left sm:grid-cols-2">
+										@couponEditFields(c)
+										<button class="btn-primary sm:col-span-2" type="submit">Save</button>
+									</form>
+									<form method="post" action={ templ.SafeURL("/admin/coupons/" + c.ID.String() + "/delete") } data-msg={ "Delete " + c.Code + "?" } @submit="if (!confirm($el.dataset.msg)) $event.preventDefault()" class="mt-2">
+										<button class="text-xs text-red-600 hover:underline" type="submit">Delete coupon</button>
+									</form>
+								</details>
+							</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+			if len(cs) == 0 {
+				<p class="p-6 text-center text-stone-500">No coupons yet.</p>
+			}
+		</div>
+		<h2 class="mb-2 mt-8 text-lg font-semibold">New coupon</h2>
+		<form method="post" action="/admin/coupons" class="card grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-4" x-data="{ kind: 'percent' }">
+			<div><label class="label" for="c-code">Code</label><input class="input uppercase" id="c-code" name="code" maxlength="32" required placeholder="SUMMER10"/></div>
+			<div><label class="label" for="c-kind">Type</label>
+				<select class="input" id="c-kind" name="kind" x-model="kind">
+					<option value="percent">Percentage off</option>
+					<option value="fixed">Amount off</option>
+					<option value="free_shipping">Free delivery</option>
+				</select>
+			</div>
+			<div x-show="kind !== 'free_shipping'"><label class="label" for="c-value"><span x-text="kind === 'percent' ? 'Percent (1-100)' : 'Amount'">Percent</span></label><input class="input" id="c-value" name="value" inputmode="decimal"/></div>
+			<div><label class="label" for="c-min">Minimum order</label><input class="input" id="c-min" name="min_subtotal" inputmode="decimal" placeholder="none"/></div>
+			<div><label class="label" for="c-start">Starts</label><input class="input" id="c-start" type="date" name="starts"/></div>
+			<div><label class="label" for="c-end">Ends (inclusive)</label><input class="input" id="c-end" type="date" name="ends"/></div>
+			<div><label class="label" for="c-max">Total uses</label><input class="input" id="c-max" name="max_uses" inputmode="numeric" placeholder="unlimited"/></div>
+			<div><label class="label" for="c-per">Uses per customer</label><input class="input" id="c-per" name="max_per_user" inputmode="numeric" placeholder="unlimited"/></div>
+			<label class="flex items-center gap-2 text-sm"><input type="checkbox" name="active" value="1" checked/> Active</label>
+			<div class="sm:col-span-2 lg:col-span-3 lg:text-right"><button class="btn-primary" type="submit">Create coupon</button></div>
+		</form>
+	}
+}
+
+templ couponEditFields(c promotion.Coupon) {
+	if c.Kind != "free_shipping" {
+		<div><label class="label" for={ "ev-" + c.ID.String() }>{ valueLabel(c) }</label><input class="input" id={ "ev-" + c.ID.String() } name="value" value={ couponValue(c) } inputmode="decimal"/></div>
+	}
+	<div><label class="label" for={ "em-" + c.ID.String() }>Minimum order</label><input class="input" id={ "em-" + c.ID.String() } name="min_subtotal" value={ minValue(c) } inputmode="decimal"/></div>
+	<div><label class="label" for={ "es-" + c.ID.String() }>Starts</label><input class="input" id={ "es-" + c.ID.String() } type="date" name="starts" value={ dayValue(c.StartsAt) }/></div>
+	<div><label class="label" for={ "ee-" + c.ID.String() }>Ends</label><input class="input" id={ "ee-" + c.ID.String() } type="date" name="ends" value={ dayValue(c.EndsAt) }/></div>
+	<div><label class="label" for={ "eu-" + c.ID.String() }>Total uses</label><input class="input" id={ "eu-" + c.ID.String() } name="max_uses" value={ intValue(c.MaxUses) } inputmode="numeric"/></div>
+	<div><label class="label" for={ "ep-" + c.ID.String() }>Per customer</label><input class="input" id={ "ep-" + c.ID.String() } name="max_per_user" value={ intValue(c.MaxUsesPerUser) } inputmode="numeric"/></div>
+	<label class="flex items-center gap-2 text-sm"><input type="checkbox" name="active" value="1" checked?={ c.Active }/> Active</label>
+}
+
+// ---------------- audit log ----------------
+
+templ AuditPage(vm AuditVM) {
+	@shell("Audit log") {
+		<h1 class="mb-1 text-xl font-bold">Audit log</h1>
+		<p class="mb-4 text-sm text-stone-500">Who changed what, newest first. Entries are append-only.</p>
+		<form method="get" action="/admin/audit" class="card mb-4 flex flex-wrap items-end gap-3 p-4">
+			<div><label class="label" for="aa">Action starts with</label><input class="input" id="aa" name="action" value={ vm.Action } placeholder="order." maxlength="60"/></div>
+			<div><label class="label" for="ae">Entity</label><input class="input" id="ae" name="entity" value={ vm.Entity } placeholder="product" maxlength="40"/></div>
+			<button class="btn-primary" type="submit">Filter</button>
+		</form>
+		<div class="card overflow-x-auto">
+			<table class="w-full text-left text-sm">
+				<thead class="border-b border-stone-200 bg-stone-50 text-xs uppercase text-stone-500">
+					<tr><th class="p-3">When (UTC)</th><th class="p-3">Who</th><th class="p-3">Action</th><th class="p-3">Entity</th><th class="p-3">Details</th></tr>
+				</thead>
+				<tbody class="divide-y divide-stone-100">
+					for _, row := range vm.Rows {
+						<tr>
+							<td class="p-3 whitespace-nowrap text-stone-500">{ row.Entry.At.UTC().Format("2 Jan 15:04:05") }</td>
+							<td class="p-3">{ row.Actor }<span class="block text-xs text-stone-500">{ row.Entry.ActorRole }</span></td>
+							<td class="p-3 font-mono text-xs">{ row.Entry.Action }</td>
+							<td class="p-3 text-xs">{ row.Entry.Entity } <span class="font-mono text-stone-500">{ shortEntity(row.Entry) }</span></td>
+							<td class="p-3 text-xs text-stone-600">{ detailText(row.Entry) }</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+			if len(vm.Rows) == 0 {
+				<p class="p-6 text-center text-stone-500">Nothing recorded yet.</p>
+			}
+		</div>
+		@pager("/admin/audit", vm.Params, vm.Page, vm.HasNext)
+	}
+}
+
+func shortEntity(e audit.Entry) string {
+	if len(e.EntityID) > 8 {
+		return "…" + e.EntityID[len(e.EntityID)-8:]
+	}
+	return e.EntityID
+}
+
+// ---------------- import ----------------
+
+templ ImportPage(res *ImportResult, errMsg string) {
+	@shell("Import") {
+		<h1 class="mb-1 text-xl font-bold">Import products</h1>
+		<p class="mb-4 text-sm text-stone-500">Upload a CSV to add many products at once (up to 1,000 rows, 2 MB). Existing products are skipped, so re-uploading is safe.</p>
+		@ui.FieldError(errMsg)
+		<form method="post" action="/admin/import" enctype="multipart/form-data" class="card mt-2 flex flex-wrap items-end gap-3 p-4">
+			<div>
+				<label class="label" for="file">CSV file</label>
+				<input id="file" type="file" name="file" accept=".csv,text/csv" required class="block text-sm"/>
+			</div>
+			<button class="btn-primary" type="submit">Import</button>
+			<a class="btn-secondary" href="/admin/import/sample.csv">Download sample</a>
+		</form>
+		if res != nil {
+			<section class="card mt-6 p-5" aria-labelledby="res-h" role="status">
+				<h2 id="res-h" class="mb-2 font-semibold">Result</h2>
+				<p class="text-sm">Created <strong>{ strconv.Itoa(res.Products) }</strong> product(s) and <strong>{ strconv.Itoa(res.Variants) }</strong> variant(s). Skipped { strconv.Itoa(res.Skipped) } that already existed.</p>
+				if res.Stopped {
+					<p class="mt-2 text-sm text-amber-800">The file has more than 1,000 rows; only the first 1,000 were read.</p>
+				}
+				if len(res.Errors) > 0 {
+					<h3 class="mb-1 mt-4 text-sm font-semibold text-red-700">{ strconv.Itoa(len(res.Errors)) } row(s) were not imported</h3>
+					<ul class="space-y-1 text-sm">
+						for _, e := range res.Errors {
+							<li><span class="font-mono text-xs text-stone-500">line { strconv.Itoa(e.Line) }</span> { e.Msg }</li>
+						}
+					</ul>
+				}
+			</section>
+		}
+		<section class="mt-6 text-sm text-stone-600">
+			<h2 class="mb-1 font-semibold text-stone-900">Columns</h2>
+			<p>A <strong>product row</strong> needs <code>name</code> and <code>price</code>; optional: <code>slug</code>, <code>category</code> (created if new), <code>description</code>, <code>image_url</code>, <code>active</code>, <code>sku</code>, <code>stock</code>, <code>option_name</code>.</p>
+			<p class="mt-1">A <strong>variant row</strong> follows its product and has the product's <code>slug</code> plus <code>variant</code> (the size/colour name), and optionally <code>variant_price</code>, <code>sku</code>, <code>stock</code>.</p>
+		</section>
+	}
+}
+
+// ---------------- small helpers ----------------
+
+func couponOffer(c promotion.Coupon) string {
+	switch c.Kind {
+	case promotion.KindPercent:
+		return strconv.FormatInt(c.Value, 10) + "% off"
+	case promotion.KindFixed:
+		return money.Decimal(c.Value) + " off"
+	}
+	return "Free delivery"
+}
+
+func couponUse(c promotion.Coupon) string {
+	if c.MaxUses == nil {
+		return strconv.Itoa(c.Uses) + " / ∞"
+	}
+	return strconv.Itoa(c.Uses) + " / " + strconv.Itoa(*c.MaxUses)
+}
+
+func couponWindow(c promotion.Coupon) string {
+	switch {
+	case c.StartsAt == nil && c.EndsAt == nil:
+		return "always"
+	case c.StartsAt != nil && c.EndsAt != nil:
+		return c.StartsAt.Format("2 Jan") + " – " + c.EndsAt.Format("2 Jan 2006")
+	case c.StartsAt != nil:
+		return "from " + c.StartsAt.Format("2 Jan 2006")
+	}
+	return "until " + c.EndsAt.Format("2 Jan 2006")
+}
+
+func valueLabel(c promotion.Coupon) string {
+	if c.Kind == promotion.KindPercent {
+		return "Percent (1-100)"
+	}
+	return "Amount"
+}
+
+func couponValue(c promotion.Coupon) string {
+	if c.Kind == promotion.KindPercent {
+		return strconv.FormatInt(c.Value, 10)
+	}
+	return money.Decimal(c.Value)
+}
+
+func minValue(c promotion.Coupon) string {
+	if c.MinSubtotal == 0 {
+		return ""
+	}
+	return money.Decimal(c.MinSubtotal)
+}
+
+func dayValue(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.Format("2006-01-02")
+}
+
+func intValue(p *int) string {
+	if p == nil {
+		return ""
+	}
+	return strconv.Itoa(*p)
+}
+
+func detailText(e audit.Entry) string {
+	if len(e.Detail) == 0 {
+		return ""
+	}
+	out := ""
+	for k, v := range e.Detail {
+		if out != "" {
+			out += " · "
+		}
+		out += k + "=" + fmt.Sprint(v)
+	}
+	return out
+}

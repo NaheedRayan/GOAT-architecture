@@ -23,6 +23,16 @@ sql:
             go_type:
               type: int64
               pointer: true
+          - db_type: pg_catalog.float8
+            nullable: true
+            go_type:
+              type: float64
+              pointer: true
+          - db_type: pg_catalog.int4
+            nullable: true
+            go_type:
+              type: int32
+              pointer: true
           - db_type: timestamptz
             go_type: time.Time
           - db_type: timestamptz
@@ -50,3 +60,23 @@ sql:
     queries: internal/order/adapters/postgres/queries
     gen:
       go: {package: sqlcgen, out: internal/order/adapters/postgres/sqlcgen, sql_package: pgx/v5, overrides: *overrides}
+  - <<: *mod
+    queries: internal/shipping/adapters/postgres/queries
+    gen:
+      go: {package: sqlcgen, out: internal/shipping/adapters/postgres/sqlcgen, sql_package: pgx/v5, overrides: *overrides}
+  - <<: *mod
+    queries: internal/promotion/adapters/postgres/queries
+    gen:
+      go: {package: sqlcgen, out: internal/promotion/adapters/postgres/sqlcgen, sql_package: pgx/v5, overrides: *overrides}
+  - <<: *mod
+    queries: internal/content/adapters/postgres/queries
+    gen:
+      go: {package: sqlcgen, out: internal/content/adapters/postgres/sqlcgen, sql_package: pgx/v5, overrides: *overrides}
+  - <<: *mod
+    queries: internal/review/adapters/postgres/queries
+    gen:
+      go: {package: sqlcgen, out: internal/review/adapters/postgres/sqlcgen, sql_package: pgx/v5, overrides: *overrides}
+  - <<: *mod
+    queries: internal/wishlist/adapters/postgres/queries
+    gen:
+      go: {package: sqlcgen, out: internal/wishlist/adapters/postgres/sqlcgen, sql_package: pgx/v5, overrides: *overrides}

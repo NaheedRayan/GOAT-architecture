@@ -1,0 +1,286 @@
+package admin
+
+import (
+	"strconv"
+
+	"github.com/NaheedRayan/goat-architecture/internal/order"
+	"github.com/NaheedRayan/goat-architecture/internal/platform/money"
+	"github.com/NaheedRayan/goat-architecture/internal/platform/ui"
+)
+
+templ OrdersPage(vm OrdersVM) {
+	@shell("Orders") {
+		<div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+			<h1 class="text-xl font-bold">Orders</h1>
+			<a class="btn-secondary" href={ templ.SafeURL(exportURL(vm.Filter)) }>Export CSV</a>
+		</div>
+		if vm.PendingReturns > 0 && !vm.Filter.Returns {
+			<a href="/admin/orders?returns=1" class="mb-4 flex items-center justify-between rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 hover:bg-amber-100">
+				<span><strong>{ strconv.Itoa(vm.PendingReturns) }</strong> return request(s) waiting for a decision</span><span class="font-medium">Review →</span>
+			</a>
+		}
+		<form method="get" action="/admin/orders" class="card mb-4 grid items-end gap-3 p-4 sm:grid-cols-2 lg:grid-cols-[1fr_10rem_9rem_9rem_auto_auto]">
+			<div>
+				<label class="label" for="q">Search</label>
+				<input class="input" id="q" name="q" value={ vm.Filter.Query } placeholder="Order number, email, name, phone, tracking" maxlength="100"/>
+			</div>
+			<div>
+				<label class="label" for="status">Status</label>
+				<select class="input" id="status" name="status">
+					<option value="">All</option>
+					for _, s := range orderStatuses {
+						<option value={ s } selected?={ vm.Filter.Status == s }>{ ui.StatusLabel(s) }</option>
+					}
+				</select>
+			</div>
+			<div>
+				<label class="label" for="from">From</label>
+				<input class="input" id="from" type="date" name="from" value={ vm.Filter.From }/>
+			</div>
+			<div>
+				<label class="label" for="to">To</label>
+				<input class="input" id="to" type="date" name="to" value={ vm.Filter.To }/>
+			</div>
+			<label class="flex items-center gap-2 pb-2 text-sm"><input type="checkbox" name="returns" value="1" checked?={ vm.Filter.Returns }/> Returns only</label>
+			<div class="flex gap-2">
+				<button class="btn-primary" type="submit">Filter</button>
+				<a class="btn-secondary" href="/admin/orders">Reset</a>
+			</div>
+		</form>
+		<div class="card overflow-x-auto">
+			<table class="w-full text-left text-sm">
+				<thead class="border-b border-stone-200 bg-stone-50 text-xs uppercase text-stone-500">
+					<tr><th class="p-3">Order</th><th class="p-3">Placed</th><th class="p-3">Customer</th><th class="p-3">Status</th><th class="p-3 text-right">Total</th></tr>
+				</thead>
+				<tbody class="divide-y divide-stone-100">
+					for _, o := range vm.Orders {
+						<tr class="hover:bg-stone-50">
+							<td class="p-3"><a class="font-medium text-brand-700" href={ templ.SafeURL("/admin/orders/" + o.ID.String()) }>{ shortID(o.ID.String()) }</a></td>
+							<td class="p-3 whitespace-nowrap">{ o.CreatedAt.Format("2 Jan 15:04") }</td>
+							<td class="p-3">{ o.Shipping.FullName }<span class="block text-xs text-stone-500">{ o.ContactEmail }</span></td>
+							<td class="p-3">
+								@ui.StatusBadge(o.Status)
+								if o.Return.Status == order.ReturnRequested {
+									<span class="badge ml-1 bg-amber-100 text-amber-800">Return requested</span>
+								}
+							</td>
+							<td class="p-3 text-right">{ money.Format(o.TotalCents, o.Currency) }</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+			if len(vm.Orders) == 0 {
+				<p class="p-6 text-center text-stone-500">No orders match.</p>
+			}
+		</div>
+		if vm.Page > 1 || vm.HasNext {
+			<nav class="mt-4 flex items-center justify-center gap-3 text-sm" aria-label="Pagination">
+				if vm.Page > 1 {
+					<a class="btn-secondary" href={ templ.SafeURL(ordersURL(vm.Filter, vm.Page-1)) }>Previous</a>
+				}
+				<span class="text-stone-500">Page { strconv.Itoa(vm.Page) }</span>
+				if vm.HasNext {
+					<a class="btn-secondary" href={ templ.SafeURL(ordersURL(vm.Filter, vm.Page+1)) }>Next</a>
+				}
+			</nav>
+		}
+	}
+}
+
+templ OrderDetailPage(vm OrderVM) {
+	@shell("Order") {
+		{{ o := vm.Order }}
+		<div class="mb-4 flex flex-wrap items-center gap-3">
+			<h1 class="text-xl font-bold">Order { shortID(o.ID.String()) }</h1>
+			@ui.StatusBadge(o.Status)
+			if o.Return.Status != "" {
+				<span class="badge bg-amber-100 text-amber-800">Return { o.Return.Status }</span>
+			}
+			<a class="ml-auto text-sm text-stone-500 hover:underline" href="/admin/orders">← All orders</a>
+		</div>
+		if vm.Done != "" {
+			<p class="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800" role="status">{ vm.Done }</p>
+		}
+		@ui.FieldError(vm.Error)
+		<div class="grid gap-6 lg:grid-cols-[1fr_22rem]">
+			<div class="space-y-6">
+				<ul class="card divide-y divide-stone-200 text-sm">
+					for _, it := range o.Items {
+						<li class="flex justify-between gap-4 p-4">
+							<span>{ it.DisplayName() } × { strconv.Itoa(it.Quantity) }
+								if it.SKU != "" {
+									<span class="ml-1 font-mono text-xs text-stone-500">{ it.SKU }</span>
+								}
+							</span>
+							<span>{ money.Format(it.SubtotalCents(), o.Currency) }</span>
+						</li>
+					}
+					<li class="space-y-1 p-4 text-sm">
+						<p class="flex justify-between"><span>Subtotal</span><span>{ money.Format(o.SubtotalCents, o.Currency) }</span></p>
+						if o.DiscountCents > 0 {
+							<p class="flex justify-between text-emerald-700"><span>Discount { o.CouponCode }</span><span>−{ money.Format(o.DiscountCents, o.Currency) }</span></p>
+						}
+						<p class="flex justify-between"><span>Delivery { o.ShippingMethod }</span><span>{ money.Format(o.ShippingCents, o.Currency) }</span></p>
+						if o.TaxCents > 0 {
+							<p class="flex justify-between text-stone-600"><span>Tax
+								if o.TaxInclusive {
+									(included)
+								}
+							</span><span>{ money.Format(o.TaxCents, o.Currency) }</span></p>
+						}
+						<p class="flex justify-between border-t border-stone-200 pt-2 text-base font-bold"><span>Total</span><span>{ money.Format(o.TotalCents, o.Currency) }</span></p>
+						if o.RefundCents > 0 {
+							<p class="flex justify-between text-violet-700"><span>Refunded</span><span>{ money.Format(o.RefundCents, o.Currency) }</span></p>
+						}
+					</li>
+				</ul>
+				<section class="card p-5" aria-labelledby="hist-h">
+					<h2 id="hist-h" class="mb-3 font-semibold">History</h2>
+					<ol class="space-y-3 border-l border-stone-200 pl-4 text-sm">
+						for _, e := range o.Events {
+							<li class="relative"><span class="absolute -left-[1.4rem] top-1.5 h-2 w-2 rounded-full bg-brand-700" aria-hidden="true"></span>
+								<p class="font-medium">{ e.Detail }</p><p class="text-xs text-stone-500">{ e.At.Format("2 Jan 2006, 15:04") }</p></li>
+						}
+					</ol>
+				</section>
+				<section class="card p-5" aria-labelledby="note-h">
+					<h2 id="note-h" class="mb-1 font-semibold">Internal note</h2>
+					<p class="mb-2 text-xs text-stone-500">Only staff can see this.</p>
+					<form method="post" action={ templ.SafeURL("/admin/orders/" + o.ID.String() + "/note") } class="space-y-2">
+						<label class="sr-only" for="note">Internal note</label>
+						<textarea class="input" id="note" name="note" rows="3" maxlength="2000">{ o.AdminNote }</textarea>
+						<button class="btn-secondary" type="submit">Save note</button>
+					</form>
+				</section>
+			</div>
+			<aside class="space-y-4">
+				<div class="card space-y-1 p-5 text-sm">
+					<h2 class="mb-2 font-semibold">Customer</h2>
+					<p>{ o.Shipping.FullName }</p>
+					if o.ContactEmail != "" {
+						<p><a class="text-brand-700 hover:underline" href={ templ.SafeURL("mailto:" + o.ContactEmail) }>{ o.ContactEmail }</a></p>
+					}
+					<p class="text-stone-500">{ o.Shipping.Phone }</p>
+					<p class="pt-2">{ o.Shipping.Line1 }</p>
+					if o.Shipping.Line2 != "" {
+						<p>{ o.Shipping.Line2 }</p>
+					}
+					<p>{ o.Shipping.City }, { o.Shipping.PostalCode }, { o.Shipping.Country }</p>
+					<p class="pt-2 text-stone-500">Payment: { payLabel(o) }</p>
+				</div>
+				if o.Status == order.StatusPaid || o.Status == order.StatusFulfilling {
+					<div class="card p-5">
+						<h2 class="mb-3 font-semibold">Ship</h2>
+						<form method="post" action={ templ.SafeURL("/admin/orders/" + o.ID.String() + "/ship") } class="space-y-3">
+							<div><label class="label" for="carrier">Carrier</label><input class="input" id="carrier" name="carrier" maxlength="60" placeholder="e.g. DHL"/></div>
+							<div><label class="label" for="number">Tracking number</label><input class="input" id="number" name="number" maxlength="100"/></div>
+							<div><label class="label" for="url">Tracking link</label><input class="input" id="url" name="url" type="url" maxlength="500" placeholder="https://…"/></div>
+							<button class="btn-primary w-full" type="submit">Mark as shipped</button>
+							<p class="text-xs text-stone-500">The customer is emailed. Tracking details are optional.</p>
+						</form>
+					</div>
+				}
+				if o.Status == order.StatusShipped {
+					<div class="card space-y-2 p-5">
+						<h2 class="font-semibold">Tracking</h2>
+						if !o.Tracking.Empty() {
+							<p class="text-sm">{ o.Tracking.Carrier } <span class="font-mono">{ o.Tracking.Number }</span></p>
+						}
+						<form method="post" action={ templ.SafeURL("/admin/orders/" + o.ID.String() + "/deliver") }>
+							<button class="btn-primary w-full" type="submit">Mark as delivered</button>
+						</form>
+						if o.PaymentMethod == order.MethodCOD {
+							<p class="text-xs text-stone-500">Cash on delivery: marking it delivered records the cash as collected.</p>
+						}
+					</div>
+				}
+				if o.Return.Status == order.ReturnRequested {
+					<div class="card space-y-3 border-amber-300 p-5 text-sm">
+						<h2 class="font-semibold">Return requested</h2>
+						<p class="text-stone-600">“{ o.Return.Reason }”</p>
+						if !vm.ReturnDeadline.IsZero() {
+							<p class="text-xs text-stone-500">Window until { vm.ReturnDeadline.Format("2 Jan 2006") }</p>
+						}
+						if vm.IsAdmin {
+							<form method="post" action={ templ.SafeURL("/admin/orders/" + o.ID.String() + "/return/approve") } class="space-y-2" data-msg="Approve the return and refund this order?" @submit="if (!confirm($el.dataset.msg)) $event.preventDefault()">
+								<label class="label" for="approve-note">Reply to the customer (optional)</label>
+								<input class="input" id="approve-note" name="note" maxlength="500"/>
+								<label class="flex items-center gap-2"><input type="checkbox" name="restock" value="1" checked/> Put the items back in stock</label>
+								<button class="btn-primary w-full" type="submit">Approve and refund</button>
+							</form>
+						}
+						<form method="post" action={ templ.SafeURL("/admin/orders/" + o.ID.String() + "/return/reject") } class="space-y-2">
+							<label class="label" for="reject-note">Reason for declining</label>
+							<input class="input" id="reject-note" name="note" maxlength="500"/>
+							<button class="btn-danger w-full" type="submit">Decline return</button>
+						</form>
+					</div>
+				} else if o.Return.Status != "" {
+					<div class="card space-y-1 p-5 text-sm">
+						<h2 class="font-semibold">Return { o.Return.Status }</h2>
+						<p class="text-stone-600">“{ o.Return.Reason }”</p>
+						if o.Return.Note != "" {
+							<p class="text-stone-500">Reply: { o.Return.Note }</p>
+						}
+					</div>
+				}
+				if cancelAllowed(o, vm.IsAdmin) {
+					<div class="card p-5">
+						<h2 class="mb-2 font-semibold">Cancel order</h2>
+						<form method="post" action={ templ.SafeURL("/admin/orders/" + o.ID.String() + "/cancel") } class="space-y-2" data-msg="Cancel this order?" @submit="if (!confirm($el.dataset.msg)) $event.preventDefault()">
+							<label class="sr-only" for="cancel-reason">Reason</label>
+							<input class="input" id="cancel-reason" name="reason" maxlength="300" placeholder="Reason (shown in the history)"/>
+							<button class="btn-danger w-full" type="submit">Cancel order</button>
+							if o.Status == order.StatusPaid && o.PaymentMethod == order.MethodCard {
+								<p class="text-xs text-stone-500">The card payment is refunded.</p>
+							}
+						</form>
+					</div>
+				}
+				if vm.IsAdmin && o.Refundable() {
+					<div class="card p-5">
+						<h2 class="mb-2 font-semibold">Refund</h2>
+						<form method="post" action={ templ.SafeURL("/admin/orders/" + o.ID.String() + "/refund") } class="space-y-2" data-msg="Refund this order? This cannot be undone." @submit="if (!confirm($el.dataset.msg)) $event.preventDefault()">
+							<label class="sr-only" for="refund-reason">Reason</label>
+							<input class="input" id="refund-reason" name="reason" maxlength="300" placeholder="Reason (shown in the history)"/>
+							<label class="flex items-center gap-2 text-sm"><input type="checkbox" name="restock" value="1" checked?={ o.Status != order.StatusDelivered }/> Put the items back in stock</label>
+							<button class="btn-danger w-full" type="submit">Refund { money.Format(o.TotalCents, o.Currency) }</button>
+						</form>
+					</div>
+				}
+			</aside>
+		</div>
+	}
+}
+
+func cancelAllowed(o order.Order, admin bool) bool {
+	if o.Status == order.StatusAwaitingPayment {
+		return true
+	}
+	return admin && o.Status == order.StatusPaid
+}
+
+func payLabel(o order.Order) string {
+	method := "online"
+	if o.PaymentMethod == order.MethodCOD {
+		method = "cash on delivery"
+	}
+	return method
+}
+
+func ordersURL(f OrderFilter, page int) string {
+	if q := f.values(page).Encode(); q != "" {
+		return "/admin/orders?" + q
+	}
+	return "/admin/orders"
+}
+
+func exportURL(f OrderFilter) string {
+	v := f.values(1)
+	v.Del("page")
+	if q := v.Encode(); q != "" {
+		return "/admin/orders/export.csv?" + q
+	}
+	return "/admin/orders/export.csv"
+}
+

@@ -1,0 +1,12 @@
+package http
+
+import "github.com/NaheedRayan/goat-architecture/internal/platform/ui"
+
+templ Page(title string, body templ.Component, updated string) {
+	@ui.Layout(title) {
+		<article class="prose-page mx-auto max-w-3xl">
+			@body
+			<p class="mt-10 text-sm text-stone-500">Last updated { updated }</p>
+		</article>
+	}
+}

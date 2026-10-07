@@ -1,0 +1,139 @@
+package admin
+
+import (
+	"strconv"
+
+	"github.com/NaheedRayan/goat-architecture/internal/platform/money"
+	"github.com/NaheedRayan/goat-architecture/internal/platform/ui"
+)
+
+templ DashboardPage(vm DashboardVM) {
+	@shell("Dashboard") {
+		<div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+			<h1 class="text-xl font-bold">Dashboard</h1>
+			<div class="flex gap-2 text-sm" role="group" aria-label="Period">
+				for _, d := range []int{7, 30, 90} {
+					<a class={ filterChip(vm.Days == d) } href={ templ.SafeURL("/admin?days=" + strconv.Itoa(d)) }>{ strconv.Itoa(d) } days</a>
+				}
+			</div>
+		</div>
+		if vm.DraftPages > 0 && vm.IsAdmin {
+			<a href="/admin/pages" class="mb-4 flex items-center justify-between rounded-xl border border-sky-300 bg-sky-50 p-4 text-sm text-sky-900 hover:bg-sky-100">
+				<span><strong>{ strconv.Itoa(vm.DraftPages) }</strong> information page(s) are unpublished: terms, privacy, returns and delivery should be live before you launch</span>
+				<span class="font-medium">Review →</span>
+			</a>
+		}
+		if vm.PendingReturns > 0 {
+			<a href="/admin/orders?returns=1" class="mb-4 flex items-center justify-between rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 hover:bg-amber-100">
+				<span><strong>{ strconv.Itoa(vm.PendingReturns) }</strong> return request(s) waiting for a decision</span>
+				<span class="font-medium">Review →</span>
+			</a>
+		}
+		<div class="grid grid-cols-2 gap-4 md:grid-cols-4">
+			@stat("Revenue", money.Format(vm.Report.RevenueCents, vm.Currency), "last "+strconv.Itoa(vm.Days)+" days (UTC)")
+			@stat("Orders", strconv.Itoa(vm.Report.Orders), "confirmed or later")
+			@stat("Average order", money.Format(vm.Report.AvgOrderCents, vm.Currency), "")
+			@stat("Refunded", money.Format(vm.Report.RefundedCents, vm.Currency), strconv.Itoa(vm.Report.Refunds)+" order(s)")
+		</div>
+		<section class="card mt-6 p-5" aria-labelledby="chart-h">
+			<h2 id="chart-h" class="mb-3 font-semibold">Daily revenue</h2>
+			@revenueChart(vm)
+			<details class="mt-3 text-sm">
+				<summary class="cursor-pointer text-stone-500">Show as a table</summary>
+				<table class="mt-2 w-full text-left text-sm">
+					<thead class="text-xs uppercase text-stone-500"><tr><th class="py-1">Day</th><th class="py-1">Orders</th><th class="py-1 text-right">Revenue</th></tr></thead>
+					<tbody>
+						for _, d := range vm.Series {
+							if d.Orders > 0 {
+								<tr class="border-t border-stone-100"><td class="py-1">{ d.Day.Format("2 Jan 2006") }</td><td>{ strconv.Itoa(d.Orders) }</td><td class="text-right">{ money.Format(d.RevenueCents, vm.Currency) }</td></tr>
+							}
+						}
+					</tbody>
+				</table>
+			</details>
+		</section>
+		<div class="mt-6 grid gap-6 lg:grid-cols-2">
+			<section class="card p-5" aria-labelledby="status-h">
+				<h2 id="status-h" class="mb-3 font-semibold">Orders by status</h2>
+				<div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+					for _, c := range vm.Counts {
+						<a href={ templ.SafeURL("/admin/orders?status=" + c.Status) } class="rounded-lg border border-stone-200 p-3 hover:bg-stone-50">
+							<p class="text-2xl font-extrabold">{ strconv.Itoa(c.N) }</p>
+							<p class="text-xs text-stone-500">{ ui.StatusLabel(c.Status) }</p>
+						</a>
+					}
+				</div>
+			</section>
+			<section class="card p-5" aria-labelledby="top-h">
+				<h2 id="top-h" class="mb-3 font-semibold">Top products</h2>
+				if len(vm.Report.Top) == 0 {
+					<p class="text-sm text-stone-500">No sales in this period yet.</p>
+				} else {
+					<ol class="space-y-2 text-sm">
+						for _, p := range vm.Report.Top {
+							<li class="flex justify-between gap-3"><a class="truncate hover:text-brand-700" href={ templ.SafeURL("/admin/products/" + p.ProductID.String() + "/edit") }>{ p.Name }</a><span class="shrink-0 text-stone-600">{ strconv.Itoa(p.Units) } sold · { money.Format(p.RevenueCents, vm.Currency) }</span></li>
+						}
+					</ol>
+				}
+			</section>
+		</div>
+		<section class="card mt-6 p-5" aria-labelledby="low-h">
+			<h2 id="low-h" class="mb-1 font-semibold">Low stock</h2>
+			<p class="mb-3 text-xs text-stone-500">Items with { strconv.Itoa(vm.Threshold) } or fewer units left.</p>
+			if len(vm.LowStock) == 0 {
+				<p class="text-sm text-stone-500">Everything is comfortably stocked.</p>
+			} else {
+				<ul class="divide-y divide-stone-100 text-sm">
+					for _, l := range vm.LowStock {
+						<li class="flex items-center justify-between gap-3 py-2">
+							<a class="truncate hover:text-brand-700" href={ templ.SafeURL("/admin/products/" + l.ProductID.String() + "/edit") }>{ lowName(l) }</a>
+							<span class={ lowClass(l.Available) }>
+								if l.Available == 0 {
+									Sold out
+								} else {
+									{ strconv.Itoa(l.Available) } left
+								}
+							</span>
+						</li>
+					}
+				</ul>
+			}
+		</section>
+	}
+}
+
+templ stat(label, value, note string) {
+	<div class="card p-4">
+		<p class="text-xs uppercase tracking-wide text-stone-500">{ label }</p>
+		<p class="mt-1 text-2xl font-extrabold">{ value }</p>
+		if note != "" {
+			<p class="text-xs text-stone-500">{ note }</p>
+		}
+	</div>
+}
+
+templ revenueChart(vm DashboardVM) {
+	{{ bars, width := chartBars(vm.Series, func(c int64) string { return money.Format(c, vm.Currency) }) }}
+	<svg viewBox={ "0 0 " + strconv.FormatFloat(width, 'f', 0, 64) + " 100" } class="h-40 w-full" role="img" aria-label={ "Revenue per day over the last " + strconv.Itoa(vm.Days) + " days" } preserveAspectRatio="none">
+		for _, b := range bars {
+			<rect x={ strconv.FormatFloat(b.X, 'f', 2, 64) } y={ strconv.FormatFloat(b.Y, 'f', 2, 64) } width={ strconv.FormatFloat(b.W, 'f', 2, 64) } height={ strconv.FormatFloat(b.H, 'f', 2, 64) } class="fill-brand-600" rx="1">
+				<title>{ b.Label }</title>
+			</rect>
+		}
+		<line x1="0" y1="100" x2={ strconv.FormatFloat(width, 'f', 0, 64) } y2="100" class="stroke-stone-300" stroke-width="0.5"></line>
+	</svg>
+}
+
+func lowName(l LowStockRow) string {
+	if l.Label == "" {
+		return l.Name
+	}
+	return l.Name + " — " + l.Label
+}
+
+func lowClass(n int) string {
+	if n == 0 {
+		return "badge bg-red-100 text-red-700"
+	}
+	return "badge bg-amber-100 text-amber-800"
+}

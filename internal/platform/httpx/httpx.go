@@ -115,6 +115,18 @@ func ClientIP(r *http.Request) string {
 	return strings.Trim(host, "[]")
 }
 
+// BodyLimitFunc is BodyLimit with a per-request limit (e.g. larger for file uploads).
+func BodyLimitFunc(limit func(*http.Request) int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Body != nil {
+				r.Body = http.MaxBytesReader(w, r.Body, limit(r))
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // BodyLimit caps request bodies so a client cannot make the server buffer huge forms.
 func BodyLimit(max int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

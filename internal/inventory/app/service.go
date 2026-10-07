@@ -31,10 +31,12 @@ type Repository interface {
 	ReservedByOrder(ctx context.Context, orderID uuid.UUID) ([]domain.Reservation, error) // FOR UPDATE
 	SetReservationStatus(ctx context.Context, reservationID uuid.UUID, status string) error
 	CommitOrder(ctx context.Context, orderID uuid.UUID) (int, error)
+	CommittedByOrder(ctx context.Context, orderID uuid.UUID) ([]domain.Reservation, error)
 	ClaimExpired(ctx context.Context, limit int) ([]domain.Reservation, error) // FOR UPDATE SKIP LOCKED
 	Available(ctx context.Context, variantIDs []uuid.UUID) (map[uuid.UUID]int, error)
 	Lots(ctx context.Context, variantID uuid.UUID) ([]domain.Lot, error)
 	PurgeReservations(ctx context.Context, before time.Time) (int64, error)
+	LowStock(ctx context.Context, threshold, limit int) ([]domain.StockLevel, error)
 }
 
 type Tx interface {
@@ -223,4 +225,29 @@ func (s *Service) SetLotQuantity(ctx context.Context, variantID, lotID uuid.UUID
 		return domain.ErrInvalidQuantity
 	}
 	return s.repo.SetLotQuantity(ctx, variantID, lotID, qty)
+}
+
+// Return puts a sold order's stock back on the shelf (cancelled after payment,
+// refunded or returned). Idempotent: reservations already returned are skipped.
+func (s *Service) Return(ctx context.Context, orderID uuid.UUID) error {
+	return s.tx.WithTx(ctx, func(ctx context.Context) error {
+		rs, err := s.repo.CommittedByOrder(ctx, orderID)
+		if err != nil {
+			return err
+		}
+		for _, r := range rs {
+			if err := s.repo.AdjustLot(ctx, r.LotID, r.Quantity); err != nil {
+				return err
+			}
+			if err := s.repo.SetReservationStatus(ctx, r.ID, domain.StatusReturned); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// LowStock lists variants at or below the threshold (including sold out), lowest first.
+func (s *Service) LowStock(ctx context.Context, threshold, limit int) ([]domain.StockLevel, error) {
+	return s.repo.LowStock(ctx, threshold, limit)
 }

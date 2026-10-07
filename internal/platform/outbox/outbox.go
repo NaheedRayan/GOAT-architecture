@@ -80,14 +80,18 @@ func claim(ctx context.Context, q db.DBTX, kinds []string, n int, lease time.Dur
 	return jobs, rows.Err()
 }
 
-func complete(ctx context.Context, q db.DBTX, jobID id.ID) error {
-	_, err := q.Exec(ctx,
-		`UPDATE platform.jobs SET status='done', locked_until=NULL, updated_at=now() WHERE id=$1`, jobID)
+// complete marks a job done. With redact, the payload is wiped: it may hold
+// something sensitive (a password-reset link) that should not outlive delivery.
+func complete(ctx context.Context, q db.DBTX, jobID id.ID, redact bool) error {
+	_, err := q.Exec(ctx, `
+		UPDATE platform.jobs SET status='done', locked_until=NULL, updated_at=now(),
+			payload = CASE WHEN $2 THEN '{}'::jsonb ELSE payload END
+		WHERE id=$1`, jobID, redact)
 	return err
 }
 
 // fail retries with exponential backoff, or marks the job dead after max_attempts.
-func fail(ctx context.Context, q db.DBTX, j Job, cause error) (dead bool, err error) {
+func fail(ctx context.Context, q db.DBTX, j Job, cause error, redact bool) (dead bool, err error) {
 	var status string
 	err = q.QueryRow(ctx, `
 		UPDATE platform.jobs SET
@@ -95,9 +99,10 @@ func fail(ctx context.Context, q db.DBTX, j Job, cause error) (dead bool, err er
 			run_at = now() + make_interval(secs => least(power(2, attempts), 3600)),
 			locked_until = NULL,
 			last_error = $2,
-			updated_at = now()
+			updated_at = now(),
+			payload = CASE WHEN $3 AND attempts >= max_attempts THEN '{}'::jsonb ELSE payload END
 		WHERE id = $1
-		RETURNING status`, j.ID, cause.Error()).Scan(&status)
+		RETURNING status`, j.ID, cause.Error(), redact).Scan(&status)
 	return status == "dead", err
 }
 

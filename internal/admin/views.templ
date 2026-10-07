@@ -8,7 +8,7 @@ import (
 
 	"github.com/NaheedRayan/goat-architecture/internal/catalog"
 	"github.com/NaheedRayan/goat-architecture/internal/inventory"
-	"github.com/NaheedRayan/goat-architecture/internal/order"
+	"github.com/NaheedRayan/goat-architecture/internal/platform/auth"
 	"github.com/NaheedRayan/goat-architecture/internal/platform/money"
 	"github.com/NaheedRayan/goat-architecture/internal/platform/ui"
 )
@@ -19,13 +19,14 @@ type StatusCount struct {
 }
 
 type ProductForm struct {
-	ID, Name, Slug, CategoryID, Price, ImageURL, Description string
-	Active                                                   bool
+	ID, Name, Slug, CategoryID, Price, ImageURL, Description, OptionName, SKU string
+	Active                                                                    bool
+	Images                                                                    []catalog.Image
 }
 
 func formFromProduct(p catalog.Product) ProductForm {
 	f := ProductForm{ID: p.ID.String(), Name: p.Name, Slug: p.Slug, Price: money.Decimal(p.PriceCents),
-		ImageURL: p.ImageURL, Description: p.Description, Active: p.Active}
+		ImageURL: p.ImageURL, Description: p.Description, Active: p.Active, OptionName: p.OptionName, Images: p.Images}
 	if p.CategoryID != nil {
 		f.CategoryID = p.CategoryID.String()
 	}
@@ -34,28 +35,28 @@ func formFromProduct(p catalog.Product) ProductForm {
 
 templ shell(title string) {
 	@ui.Layout("Admin · " + title) {
-		<div class="mb-6 flex flex-wrap items-center gap-2 border-b border-stone-200 pb-3 text-sm font-medium">
+		<div class="mb-6 flex flex-wrap items-center gap-1 border-b border-stone-200 pb-3 text-sm font-medium">
 			<span class="mr-3 text-lg font-bold">Admin</span>
-			<a class="rounded-lg px-3 py-1.5 hover:bg-stone-100" href="/admin">Dashboard</a>
-			<a class="rounded-lg px-3 py-1.5 hover:bg-stone-100" href="/admin/products">Products</a>
-			<a class="rounded-lg px-3 py-1.5 hover:bg-stone-100" href="/admin/categories">Categories</a>
-			<a class="rounded-lg px-3 py-1.5 hover:bg-stone-100" href="/admin/orders">Orders</a>
+			@navLink("/admin", "Dashboard")
+			@navLink("/admin/products", "Products")
+			@navLink("/admin/categories", "Categories")
+			@navLink("/admin/orders", "Orders")
+			if c, ok := auth.FromContext(ctx); ok && c.Role == auth.RoleAdmin {
+				@navLink("/admin/shipping", "Delivery")
+				@navLink("/admin/coupons", "Coupons")
+				@navLink("/admin/users", "Users")
+				@navLink("/admin/reviews", "Reviews")
+				@navLink("/admin/pages", "Pages")
+				@navLink("/admin/import", "Import")
+				@navLink("/admin/audit", "Audit log")
+			}
 		</div>
 		{ children... }
 	}
 }
 
-templ DashboardPage(counts []StatusCount) {
-	@shell("Dashboard") {
-		<div class="grid grid-cols-2 gap-4 md:grid-cols-5">
-			for _, c := range counts {
-				<a href={ templ.SafeURL("/admin/orders?status=" + c.Status) } class="card p-4 hover:shadow-md">
-					<p class="text-3xl font-extrabold">{ strconv.Itoa(c.N) }</p>
-					<p class="mt-1 text-sm text-stone-500">{ ui.StatusLabel(c.Status) }</p>
-				</a>
-			}
-		</div>
-	}
+templ navLink(href, label string) {
+	<a class="rounded-lg px-3 py-1.5 hover:bg-stone-100" href={ templ.SafeURL(href) }>{ label }</a>
 }
 
 templ ProductsPage(page catalog.Page, stock map[uuid.UUID]int, cats []catalog.Category, deleted bool) {
@@ -98,10 +99,10 @@ templ ProductsPage(page catalog.Page, stock map[uuid.UUID]int, cats []catalog.Ca
 							<td class="p-3 text-right">
 								if p.Archived() {
 									<form method="post" action={ templ.SafeURL("/admin/products/" + p.ID.String() + "/restore") }>
-										<button class="font-medium text-brand-600 hover:underline" type="submit">Restore</button>
+										<button class="font-medium text-brand-700 hover:underline" type="submit">Restore</button>
 									</form>
 								} else {
-									<a class="font-medium text-brand-600" href={ templ.SafeURL("/admin/products/" + p.ID.String() + "/edit") }>Edit</a>
+									<a class="font-medium text-brand-700" href={ templ.SafeURL("/admin/products/" + p.ID.String() + "/edit") }>Edit</a>
 								}
 							</td>
 						</tr>
@@ -123,93 +124,191 @@ templ ProductsPage(page catalog.Page, stock map[uuid.UUID]int, cats []catalog.Ca
 	}
 }
 
-templ ProductFormPage(f ProductForm, cats []catalog.Category, lots []inventory.Lot, errMsg string) {
+templ ProductFormPage(f ProductForm, cats []catalog.Category, rows []VariantRow, errMsg string) {
 	@shell("Product") {
-		<div class="grid gap-8 lg:grid-cols-[1fr_22rem]">
-			<form method="post" action={ templ.SafeURL(formAction(f)) } class="card space-y-4 p-6">
-				<h1 class="text-xl font-bold">
-					if f.ID == "" {
-						New product
-					} else {
-						Edit product
+		<form method="post" action={ templ.SafeURL(formAction(f)) } class="card space-y-4 p-6">
+			<h1 class="text-xl font-bold">
+				if f.ID == "" {
+					New product
+				} else {
+					Edit product
+				}
+			</h1>
+			<div>
+				<label class="label" for="name">Name</label>
+				<input class="input" id="name" name="name" value={ f.Name } maxlength="200" required/>
+			</div>
+			<div class="grid gap-4 sm:grid-cols-3">
+				<div>
+					<label class="label" for="price">Base price</label>
+					<input class="input" id="price" name="price" value={ f.Price } inputmode="decimal" placeholder="12.50" required/>
+				</div>
+				<div>
+					<label class="label" for="slug">URL slug (optional)</label>
+					<input class="input" id="slug" name="slug" value={ f.Slug } placeholder="auto from name"/>
+				</div>
+				if f.ID == "" {
+					<div>
+						<label class="label" for="sku">SKU (optional)</label>
+						<input class="input" id="sku" name="sku" value={ f.SKU } maxlength="64"/>
+					</div>
+				} else {
+					<div>
+						<label class="label" for="option_name">Variants are called</label>
+						<input class="input" id="option_name" name="option_name" value={ f.OptionName } maxlength="40" placeholder="Size, Colour…"/>
+					</div>
+				}
+			</div>
+			<div>
+				<label class="label flex justify-between" for="category_id">
+					<span>Category</span>
+					<a class="font-normal text-brand-700 hover:underline" href="/admin/categories">Manage categories</a>
+				</label>
+				<select class="input" id="category_id" name="category_id">
+					<option value="">None</option>
+					for _, c := range cats {
+						<option value={ c.ID.String() } selected?={ c.ID.String() == f.CategoryID }>{ c.Name }</option>
 					}
-				</h1>
-				<div>
-					<label class="label" for="name">Name</label>
-					<input class="input" id="name" name="name" value={ f.Name } required/>
-				</div>
-				<div class="grid gap-4 sm:grid-cols-2">
-					<div>
-						<label class="label" for="slug">URL slug (optional)</label>
-						<input class="input" id="slug" name="slug" value={ f.Slug } placeholder="auto from name"/>
-					</div>
-					<div>
-						<label class="label" for="price">Price</label>
-						<input class="input" id="price" name="price" value={ f.Price } inputmode="decimal" placeholder="12.50" required/>
-					</div>
-				</div>
-				<div>
-					<label class="label flex justify-between" for="category_id">
-						<span>Category</span>
-						<a class="font-normal text-brand-600 hover:underline" href="/admin/categories">Manage categories</a>
-					</label>
-					<select class="input" id="category_id" name="category_id">
-						<option value="">None</option>
-						for _, c := range cats {
-							<option value={ c.ID.String() } selected?={ c.ID.String() == f.CategoryID }>{ c.Name }</option>
-						}
-					</select>
-				</div>
-				<div>
-					<label class="label" for="image_url">Image URL</label>
-					<input class="input" id="image_url" name="image_url" value={ f.ImageURL } placeholder="https://…"/>
-				</div>
-				<div>
-					<label class="label" for="description">Description</label>
-					<textarea class="input" id="description" name="description" rows="5">{ f.Description }</textarea>
-				</div>
-				<label class="flex items-center gap-2 text-sm"><input type="checkbox" name="active" value="1" checked?={ f.Active }/> Visible in the store</label>
-				@ui.FieldError(errMsg)
-				<div class="flex gap-3">
-					<button class="btn-primary" type="submit">Save</button>
-					<a class="btn-secondary" href="/admin/products">Back</a>
-				</div>
-			</form>
-			if f.ID != "" {
-				<section class="card h-fit space-y-4 p-6">
-					<h2 class="text-lg font-semibold">Stock</h2>
-					<p class="text-xs text-stone-500">Receive a new batch below, or correct a batch's available count (units held by open orders are not included).</p>
-					<form method="post" action={ templ.SafeURL("/admin/products/" + f.ID + "/stock") } class="space-y-3">
-						<input class="input" name="label" placeholder="Label, e.g. PO-1042"/>
-						<input class="input" type="number" name="quantity" min="1" placeholder="Quantity received" required/>
-						<button class="btn-secondary w-full" type="submit">Receive stock</button>
+				</select>
+			</div>
+			<div>
+				<label class="label" for="image_url">Image URL</label>
+				<input class="input" id="image_url" name="image_url" value={ f.ImageURL } placeholder="https://…"/>
+			</div>
+			<div>
+				<label class="label" for="description">Description</label>
+				<textarea class="input" id="description" name="description" rows="5" maxlength="5000">{ f.Description }</textarea>
+			</div>
+			<label class="flex items-center gap-2 text-sm"><input type="checkbox" name="active" value="1" checked?={ f.Active }/> Visible in the store</label>
+			@ui.FieldError(errMsg)
+			<div class="flex gap-3">
+				<button class="btn-primary" type="submit">Save</button>
+				<a class="btn-secondary" href="/admin/products">Back</a>
+			</div>
+		</form>
+		if f.ID != "" {
+			<section class="mt-8" aria-labelledby="images-h">
+				<h2 id="images-h" class="mb-1 text-lg font-semibold">Images</h2>
+				<p class="mb-4 text-sm text-stone-500">The first image is the cover shown in listings. JPEG, PNG, GIF or WebP up to 8 MB; they are resized and cleaned for you. Uploaded images replace the Image URL above.</p>
+				<div class="card p-4">
+					if len(f.Images) > 0 {
+						<ul class="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-5">
+							for i, im := range f.Images {
+								<li class="space-y-2 text-xs">
+									<img src={ im.ThumbURL } alt={ im.Alt } class="aspect-square w-full rounded-lg border border-stone-200 object-cover"/>
+									if i == 0 {
+										<span class="badge bg-brand-100 text-brand-700">Cover</span>
+									}
+									<div class="flex flex-wrap gap-1">
+										@imageAction(f.ID, im, "up", "↑", i > 0)
+										@imageAction(f.ID, im, "down", "↓", i < len(f.Images)-1)
+										<form method="post" action={ templ.SafeURL("/admin/products/" + f.ID + "/images/" + im.ID.String() + "/delete") } data-msg="Remove this image?" @submit="if (!confirm($el.dataset.msg)) $event.preventDefault()">
+											<button class="rounded border border-red-200 px-2 py-1 text-red-700 hover:bg-red-50" type="submit" aria-label="Remove image">Remove</button>
+										</form>
+									</div>
+								</li>
+							}
+						</ul>
+					}
+					<form method="post" action={ templ.SafeURL("/admin/products/" + f.ID + "/images") } enctype="multipart/form-data" class="flex flex-wrap items-end gap-3">
+						<div>
+							<label class="label" for="image">Add an image</label>
+							<input id="image" type="file" name="image" accept="image/jpeg,image/png,image/gif,image/webp" required class="block text-sm"/>
+						</div>
+						<div class="min-w-48 flex-1">
+							<label class="label" for="alt">Description for screen readers (optional)</label>
+							<input id="alt" class="input" name="alt" maxlength="200"/>
+						</div>
+						<button class="btn-secondary" type="submit">Upload</button>
 					</form>
-					<ul class="divide-y divide-stone-100 text-sm">
-						for _, l := range lots {
-							<li class="py-2">
-								<form method="post" action={ templ.SafeURL("/admin/products/" + f.ID + "/stock/" + l.ID.String()) } class="flex items-center gap-2">
-									<span class="flex-1 truncate" title={ lotLabel(l) }>{ lotLabel(l) }</span>
-									<label class="sr-only" for={ "lot-" + l.ID.String() }>Available in { lotLabel(l) }</label>
-									<input id={ "lot-" + l.ID.String() } class="input w-24 text-right" type="number" name="quantity" min="0" max="1000000" value={ strconv.Itoa(l.Quantity) }/>
-									<button class="btn-secondary" type="submit">Set</button>
-								</form>
-							</li>
-						}
-						if len(lots) == 0 {
-							<li class="py-2 text-stone-500">No stock received yet.</li>
-						}
-					</ul>
-					<div class="border-t border-stone-200 pt-4">
-						<h3 class="mb-1 text-sm font-semibold text-red-700">Delete product</h3>
-						<p class="mb-3 text-xs text-stone-500">Removes it from the store and carts. Past orders are unaffected, and you can restore it later.</p>
-						<form method="post" action={ templ.SafeURL("/admin/products/" + f.ID + "/delete") } data-msg={ "Delete \"" + f.Name + "\"?" } @submit="if (!confirm($el.dataset.msg)) $event.preventDefault()">
-							<button class="btn-danger w-full" type="submit">Delete product</button>
-						</form>
+				</div>
+			</section>
+			<section class="mt-8" aria-labelledby="variants-h">
+				<h2 id="variants-h" class="mb-1 text-lg font-semibold">Variants &amp; stock</h2>
+				<p class="mb-4 text-sm text-stone-500">Each variant (a size, a colour…) has its own stock. Leave a variant's price empty to use the base price. Variants are hidden, never deleted, so past orders stay intact.</p>
+				<div class="space-y-4">
+					for _, row := range rows {
+						@variantCard(f, row)
+					}
+				</div>
+				<form method="post" action={ templ.SafeURL("/admin/products/" + f.ID + "/variants") } class="card mt-4 grid items-end gap-3 p-4 sm:grid-cols-[1fr_9rem_9rem_auto]">
+					<div>
+						<label class="label" for="new-label">Add a variant</label>
+						<input class="input" id="new-label" name="label" maxlength="80" placeholder="e.g. M, or Blue / L" required/>
 					</div>
-				</section>
-			}
-		</div>
+					<div>
+						<label class="label" for="new-sku">SKU</label>
+						<input class="input" id="new-sku" name="sku" maxlength="64"/>
+					</div>
+					<div>
+						<label class="label" for="new-price">Price</label>
+						<input class="input" id="new-price" name="price" inputmode="decimal" placeholder="base"/>
+					</div>
+					<input type="hidden" name="active" value="1"/>
+					<button class="btn-primary" type="submit">Add</button>
+				</form>
+			</section>
+			<section class="card mt-8 border-red-200 p-6">
+				<h3 class="mb-1 text-sm font-semibold text-red-700">Delete product</h3>
+				<p class="mb-3 text-xs text-stone-500">Removes it from the store and carts. Past orders are unaffected, and you can restore it later.</p>
+				<form method="post" action={ templ.SafeURL("/admin/products/" + f.ID + "/delete") } data-msg={ "Delete \"" + f.Name + "\"?" } @submit="if (!confirm($el.dataset.msg)) $event.preventDefault()">
+					<button class="btn-danger" type="submit">Delete product</button>
+				</form>
+			</section>
+		}
 	}
+}
+
+templ imageAction(productID string, im catalog.Image, dir, label string, enabled bool) {
+	if enabled {
+		<form method="post" action={ templ.SafeURL("/admin/products/" + productID + "/images/" + im.ID.String() + "/move") }>
+			<input type="hidden" name="dir" value={ dir }/>
+			<button class="rounded border border-stone-300 px-2 py-1 hover:bg-stone-100" type="submit" aria-label={ "Move image " + dir }>{ label }</button>
+		</form>
+	}
+}
+
+templ variantCard(f ProductForm, row VariantRow) {
+	<div class="card p-4">
+		<form method="post" action={ templ.SafeURL("/admin/variants/" + row.Variant.ID.String()) } class="grid items-end gap-3 sm:grid-cols-[1fr_9rem_9rem_auto_auto]">
+			<div>
+				<label class="label" for={ "label-" + row.Variant.ID.String() }>Name</label>
+				<input class="input" id={ "label-" + row.Variant.ID.String() } name="label" value={ row.Variant.Label } maxlength="80" placeholder="(single form)"/>
+			</div>
+			<div>
+				<label class="label" for={ "sku-" + row.Variant.ID.String() }>SKU</label>
+				<input class="input" id={ "sku-" + row.Variant.ID.String() } name="sku" value={ row.Variant.SKU } maxlength="64"/>
+			</div>
+			<div>
+				<label class="label" for={ "price-" + row.Variant.ID.String() }>Price</label>
+				<input class="input" id={ "price-" + row.Variant.ID.String() } name="price" value={ variantPrice(row.Variant) } inputmode="decimal" placeholder={ f.Price }/>
+			</div>
+			<label class="flex items-center gap-2 pb-2 text-sm"><input type="checkbox" name="active" value="1" checked?={ row.Variant.Active }/> Visible</label>
+			<button class="btn-secondary" type="submit">Save</button>
+		</form>
+		<div class="mt-3 border-t border-stone-100 pt-3">
+			<p class="mb-2 text-sm"><span class="font-medium">In stock: { strconv.Itoa(row.Available) }</span></p>
+			<ul class="space-y-2 text-sm">
+				for _, l := range row.Lots {
+					<li>
+						<form method="post" action={ templ.SafeURL("/admin/variants/" + row.Variant.ID.String() + "/stock/" + l.ID.String()) } class="flex items-center gap-2">
+							<span class="flex-1 truncate text-stone-600" title={ lotLabel(l) }>{ lotLabel(l) }</span>
+							<label class="sr-only" for={ "lot-" + l.ID.String() }>Available in { lotLabel(l) }</label>
+							<input id={ "lot-" + l.ID.String() } class="input w-24 text-right" type="number" name="quantity" min="0" max="1000000" value={ strconv.Itoa(l.Quantity) }/>
+							<button class="btn-secondary" type="submit">Set</button>
+						</form>
+					</li>
+				}
+			</ul>
+			<form method="post" action={ templ.SafeURL("/admin/variants/" + row.Variant.ID.String() + "/stock") } class="mt-3 flex flex-wrap items-center gap-2">
+				<label class="sr-only" for={ "recv-label-" + row.Variant.ID.String() }>Batch label</label>
+				<input id={ "recv-label-" + row.Variant.ID.String() } class="input w-48" name="label" placeholder="Batch label, e.g. PO-1042"/>
+				<label class="sr-only" for={ "recv-qty-" + row.Variant.ID.String() }>Quantity received</label>
+				<input id={ "recv-qty-" + row.Variant.ID.String() } class="input w-32" type="number" name="quantity" min="1" max="1000000" placeholder="Received" required/>
+				<button class="btn-secondary" type="submit">Receive stock</button>
+			</form>
+		</div>
+	</div>
 }
 
 templ CategoriesPage(stats []catalog.CategoryStat, newName, errMsg string) {
@@ -230,7 +329,7 @@ templ CategoriesPage(stats []catalog.CategoryStat, newName, errMsg string) {
 							<div x-show="!editing" class="flex items-center gap-3">
 								<span class="font-medium">{ c.Name }</span>
 								<span class="badge bg-stone-100 text-stone-600">{ productCount(c.ProductCount) }</span>
-								<span class="text-xs text-stone-400">/{ c.Slug }</span>
+								<span class="text-xs text-stone-500">/{ c.Slug }</span>
 							</div>
 							<form x-show="editing" x-cloak method="post" action={ templ.SafeURL("/admin/categories/" + c.ID.String()) } class="flex gap-2">
 								<input class="input" name="name" value={ c.Name } maxlength="60" required aria-label={ "Rename " + c.Name }/>
@@ -252,80 +351,6 @@ templ CategoriesPage(stats []catalog.CategoryStat, newName, errMsg string) {
 			}
 		</div>
 		<p class="mt-3 text-sm text-stone-500">Renaming keeps the category's URL. Deleting a category keeps its products; they just become uncategorised.</p>
-	}
-}
-
-templ OrdersPage(orders []order.Order, status string, page int, hasNext bool) {
-	@shell("Orders") {
-		<div class="mb-4 flex flex-wrap items-center gap-2 text-sm">
-			<h1 class="mr-3 text-xl font-bold">Orders</h1>
-			<a class={ filterChip(status == "") } href="/admin/orders">All</a>
-			for _, s := range orderStatuses {
-				<a class={ filterChip(status == s) } href={ templ.SafeURL("/admin/orders?status=" + s) }>{ ui.StatusLabel(s) }</a>
-			}
-		</div>
-		<div class="card overflow-x-auto">
-			<table class="w-full text-left text-sm">
-				<thead class="border-b border-stone-200 bg-stone-50 text-xs uppercase text-stone-500">
-					<tr><th class="p-3">Order</th><th class="p-3">Placed</th><th class="p-3">Customer</th><th class="p-3">Status</th><th class="p-3 text-right">Total</th></tr>
-				</thead>
-				<tbody class="divide-y divide-stone-100">
-					for _, o := range orders {
-						<tr class="hover:bg-stone-50">
-							<td class="p-3"><a class="font-medium text-brand-600" href={ templ.SafeURL("/admin/orders/" + o.ID.String()) }>{ shortID(o.ID.String()) }</a></td>
-							<td class="p-3">{ o.CreatedAt.Format("2 Jan 15:04") }</td>
-							<td class="p-3">{ o.Shipping.FullName }</td>
-							<td class="p-3">@ui.StatusBadge(o.Status)</td>
-							<td class="p-3 text-right">{ money.Format(o.TotalCents, o.Currency) }</td>
-						</tr>
-					}
-				</tbody>
-			</table>
-			if len(orders) == 0 {
-				<p class="p-6 text-center text-stone-500">No orders.</p>
-			}
-		</div>
-		if page > 1 || hasNext {
-			<nav class="mt-4 flex items-center justify-center gap-3 text-sm" aria-label="Pagination">
-				if page > 1 {
-					<a class="btn-secondary" href={ templ.SafeURL(ordersURL(status, page-1)) }>Previous</a>
-				}
-				<span class="text-stone-500">Page { strconv.Itoa(page) }</span>
-				if hasNext {
-					<a class="btn-secondary" href={ templ.SafeURL(ordersURL(status, page+1)) }>Next</a>
-				}
-			</nav>
-		}
-	}
-}
-
-templ OrderDetailPage(o order.Order) {
-	@shell("Order") {
-		<div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-			<h1 class="text-xl font-bold">Order { shortID(o.ID.String()) } @ui.StatusBadge(o.Status)</h1>
-			if o.Status == order.StatusFulfilling {
-				<form method="post" action={ templ.SafeURL("/admin/orders/" + o.ID.String() + "/ship") }>
-					<button class="btn-primary" type="submit">Mark as shipped</button>
-				</form>
-			}
-		</div>
-		<div class="grid gap-6 lg:grid-cols-[1fr_20rem]">
-			<ul class="card divide-y divide-stone-200 text-sm">
-				for _, it := range o.Items {
-					<li class="flex justify-between p-4"><span>{ it.Name } × { strconv.Itoa(it.Quantity) }</span><span>{ money.Format(it.SubtotalCents(), o.Currency) }</span></li>
-				}
-				<li class="flex justify-between p-4 font-bold"><span>Total</span><span>{ money.Format(o.TotalCents, o.Currency) }</span></li>
-			</ul>
-			<aside class="card h-fit space-y-1 p-5 text-sm">
-				<h2 class="mb-2 font-semibold">Ship to</h2>
-				<p>{ o.Shipping.FullName } · { o.Shipping.Phone }</p>
-				<p>{ o.Shipping.Line1 }</p>
-				if o.Shipping.Line2 != "" {
-					<p>{ o.Shipping.Line2 }</p>
-				}
-				<p>{ o.Shipping.City }, { o.Shipping.PostalCode }, { o.Shipping.Country }</p>
-			</aside>
-		</div>
 	}
 }
 
@@ -351,20 +376,6 @@ func deleteMessage(c catalog.CategoryStat) string {
 	return "Delete the category \"" + c.Name + "\"? Its " + productCount(c.ProductCount) + " will become uncategorised."
 }
 
-func ordersURL(status string, page int) string {
-	v := url.Values{}
-	if status != "" {
-		v.Set("status", status)
-	}
-	if page > 1 {
-		v.Set("page", strconv.Itoa(page))
-	}
-	if len(v) == 0 {
-		return "/admin/orders"
-	}
-	return "/admin/orders?" + v.Encode()
-}
-
 func productsURL(deleted bool, page int) string {
 	v := url.Values{}
 	if deleted {
@@ -386,6 +397,13 @@ func formAction(f ProductForm) string {
 	return "/admin/products/" + f.ID
 }
 
+func variantPrice(v catalog.Variant) string {
+	if v.PriceCents == nil {
+		return ""
+	}
+	return money.Decimal(*v.PriceCents)
+}
+
 func lotLabel(l inventory.Lot) string {
 	if l.Label != "" {
 		return l.Label
@@ -395,7 +413,7 @@ func lotLabel(l inventory.Lot) string {
 
 func filterChip(active bool) string {
 	if active {
-		return "rounded-full border border-brand-600 bg-brand-600 px-3 py-1 text-white"
+		return "rounded-full border border-brand-700 bg-brand-700 px-3 py-1 text-white"
 	}
 	return "rounded-full border border-stone-300 bg-white px-3 py-1 hover:border-brand-500"
 }

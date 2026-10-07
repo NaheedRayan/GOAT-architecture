@@ -1,0 +1,116 @@
+package http
+
+import (
+	"strconv"
+
+	"github.com/NaheedRayan/goat-architecture/internal/review/domain"
+)
+
+type Draft struct {
+	Rating int
+	Title  string
+	Body   string
+}
+
+type SectionVM struct {
+	Slug      string
+	Flash     string
+	SignedIn  bool
+	CanReview bool
+	Mine      *domain.Review
+	Draft     Draft
+	Reviews   []domain.Review
+	Summary   domain.Summary
+}
+
+// Stars shows a rating as filled and empty stars, with a text alternative.
+templ Stars(avg float64) {
+	{{ full := int(avg + 0.5) }}
+	<span class="text-amber-500" role="img" aria-label={ strconv.FormatFloat(avg, 'f', 1, 64) + " out of 5 stars" }>
+		for i := 1; i <= 5; i++ {
+			if i <= full {
+				<span aria-hidden="true">★</span>
+			} else {
+				<span aria-hidden="true" class="text-stone-300">★</span>
+			}
+		}
+	</span>
+}
+
+templ Section(vm SectionVM) {
+	<section id="reviews" class="mt-12" aria-labelledby="reviews-h">
+		<h2 id="reviews-h" class="mb-4 text-xl font-bold">Customer reviews</h2>
+		switch vm.Flash {
+			case "saved":
+				<p class="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800" role="status">Thanks, your review is published.</p>
+			case "invalid":
+				<p class="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">Please choose 1 to 5 stars and write a few words (title up to 100 characters, review up to 2000).</p>
+			case "not-purchased":
+				<p class="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">Only customers who received this product can review it.</p>
+			case "error":
+				<p class="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">We couldn't save your review. Please try again.</p>
+		}
+		<div class="grid gap-8 md:grid-cols-3">
+			<div>
+				if vm.Summary.Count == 0 {
+					<p class="text-sm text-stone-500">No reviews yet.</p>
+				} else {
+					<p class="text-3xl font-bold">{ strconv.FormatFloat(vm.Summary.Average, 'f', 1, 64) }<span class="text-base font-normal text-stone-500"> / 5</span></p>
+					@Stars(vm.Summary.Average)
+					<p class="mt-1 text-sm text-stone-500">{ strconv.Itoa(vm.Summary.Count) } review(s)</p>
+					<ul class="mt-3 space-y-1 text-sm">
+						for s := 5; s >= 1; s-- {
+							<li class="flex items-center gap-2">
+								<span class="w-8 text-stone-600">{ strconv.Itoa(s) }★</span>
+								<span class="h-2 flex-1 overflow-hidden rounded bg-stone-200"><span class="block h-2 bg-amber-500" style={ "width:" + strconv.Itoa(vm.Summary.Stars[s]*100/vm.Summary.Count) + "%" }></span></span>
+								<span class="w-6 text-right text-stone-500">{ strconv.Itoa(vm.Summary.Stars[s]) }</span>
+							</li>
+						}
+					</ul>
+				}
+				<div class="mt-6">
+					if !vm.SignedIn {
+						<a class="text-sm font-medium text-brand-700" href={ templ.SafeURL("/login?next=/products/" + vm.Slug) }>Sign in to review this product</a>
+					} else if vm.CanReview {
+						<form method="post" action={ templ.SafeURL("/products/" + vm.Slug + "/reviews") } class="space-y-3">
+							<h3 class="font-semibold">
+								if vm.Mine != nil {
+									Edit your review
+								} else {
+									Write a review
+								}
+							</h3>
+							<fieldset>
+								<legend class="label">Rating</legend>
+								<div class="flex gap-3 text-sm">
+									for i := 1; i <= 5; i++ {
+										<label class="inline-flex items-center gap-1"><input type="radio" name="rating" value={ strconv.Itoa(i) } checked?={ vm.Draft.Rating == i } required/>{ strconv.Itoa(i) }★</label>
+									}
+								</div>
+							</fieldset>
+							<div><label class="label" for="rv-title">Title</label><input id="rv-title" name="title" class="input" maxlength="100" value={ vm.Draft.Title }/></div>
+							<div><label class="label" for="rv-body">Review</label><textarea id="rv-body" name="body" rows="4" maxlength="2000" class="input">{ vm.Draft.Body }</textarea></div>
+							<button class="btn-primary" type="submit">Save review</button>
+						</form>
+					} else {
+						<p class="text-sm text-stone-500">Customers who received this product can review it.</p>
+					}
+				</div>
+			</div>
+			<ul class="space-y-6 md:col-span-2">
+				for _, rv := range vm.Reviews {
+					<li class="border-b border-stone-200 pb-5">
+						@Stars(float64(rv.Rating))
+						if rv.Title != "" {
+							<p class="mt-1 font-semibold">{ rv.Title }</p>
+						}
+						if rv.Body != "" {
+							<p class="mt-1 whitespace-pre-line text-stone-700">{ rv.Body }</p>
+						}
+						<p class="mt-2 text-xs text-stone-500">{ rv.Author } · { rv.CreatedAt.Format("2 Jan 2006") } · Verified purchase</p>
+					</li>
+				}
+			</ul>
+		</div>
+	</section>
+}

@@ -21,8 +21,20 @@ const (
 	EventFailed    = app.EventFailed
 )
 
+const (
+	MethodCard = domain.MethodCard
+	MethodCOD  = domain.MethodCOD
+)
+
+var ErrNotRefundable = domain.ErrNotRefundable
+
 type API interface {
-	CreateIntent(ctx context.Context, orderID, userID uuid.UUID, amountCents int64, currency string) (Payment, error)
+	// CreateIntent records a pending payment. method is "card" or "cod".
+	CreateIntent(ctx context.Context, orderID, userID uuid.UUID, amountCents int64, currency, method string) (Payment, error)
+	// CollectCOD records cash collected by the courier (cash-on-delivery orders).
+	CollectCOD(ctx context.Context, paymentID uuid.UUID) (Payment, error)
+	// Refund returns a succeeded payment (idempotent).
+	Refund(ctx context.Context, paymentID uuid.UUID) (Payment, error)
 	// Fail marks a still-pending payment as failed (e.g. its order was cancelled)
 	// and returns the payment as it stands: Status is "succeeded" if it was already paid.
 	Fail(ctx context.Context, paymentID uuid.UUID) (Payment, error)

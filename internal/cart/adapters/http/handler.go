@@ -49,6 +49,9 @@ func guestID(r *nethttp.Request) (uuid.UUID, bool) {
 }
 
 // owner resolves the cart owner key; ok is false for a visitor with no cart yet.
+// OwnerFor is the exported form of owner, for other modules that need the visitor's cart.
+func OwnerFor(r *nethttp.Request) (string, bool) { return owner(r) }
+
 func owner(r *nethttp.Request) (string, bool) {
 	if c, ok := auth.FromContext(r.Context()); ok {
 		return domain.UserOwner(c.UserID), true

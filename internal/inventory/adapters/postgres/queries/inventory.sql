@@ -51,3 +51,17 @@ GROUP BY variant_id;
 
 -- name: ListLotsByVariant :many
 SELECT * FROM inventory.stock_lots WHERE variant_id = $1 ORDER BY created_at DESC;
+
+-- name: ListCommittedByOrder :many
+SELECT id, variant_id, lot_id, quantity FROM inventory.reservations
+WHERE order_id = $1 AND status = 'committed'
+FOR UPDATE;
+
+-- name: LowStock :many
+-- Variants that have had stock but are at or below the threshold, lowest first.
+SELECT variant_id, (sum(quantity))::bigint AS available
+FROM inventory.stock_lots
+GROUP BY variant_id
+HAVING sum(quantity) <= sqlc.arg(threshold)::bigint
+ORDER BY available, variant_id
+LIMIT sqlc.arg(max_rows);

@@ -27,7 +27,7 @@ templ CartPage(v domain.View) {
 								}
 							</a>
 							<div class="flex-1">
-								<a href={ templ.SafeURL("/products/" + l.Slug) } class="font-medium hover:text-brand-600">{ l.Name }</a>
+								<a href={ templ.SafeURL("/products/" + l.Slug) } class="font-medium hover:text-brand-700">{ l.Name }</a>
 								if l.Label != "" {
 									<p class="text-sm text-stone-500">{ l.Label }</p>
 								}

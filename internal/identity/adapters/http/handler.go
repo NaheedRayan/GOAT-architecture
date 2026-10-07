@@ -34,14 +34,18 @@ type Handler struct {
 
 	// Password guessing and argon2 CPU abuse are the main threats on these routes.
 	loginIP, loginAccount, registerIP *ratelimit.Limiter
+	forgotIP, forgotAccount, resend   *ratelimit.Limiter
 }
 
 func NewHandler(svc *app.Service, signer *auth.Signer, secureCookies bool, accessTTL time.Duration, log *slog.Logger) *Handler {
 	return &Handler{
 		svc: svc, signer: signer, secure: secureCookies, accessMaxAge: accessTTL, log: log,
-		loginIP:      ratelimit.New(30, 2*time.Second), // 30 burst, then 30/min per client
-		loginAccount: ratelimit.New(6, 30*time.Second), // 6 burst, then 2/min per client+account
-		registerIP:   ratelimit.New(10, 6*time.Minute), // 10 burst, then 10/hour per client
+		loginIP:       ratelimit.New(30, 2*time.Second), // 30 burst, then 30/min per client
+		loginAccount:  ratelimit.New(6, 30*time.Second), // 6 burst, then 2/min per client+account
+		registerIP:    ratelimit.New(10, 6*time.Minute), // 10 burst, then 10/hour per client
+		forgotIP:      ratelimit.New(10, 3*time.Minute), // 10 burst, then 20/hour per client
+		forgotAccount: ratelimit.New(3, 10*time.Minute), // 3 per address, then 6/hour
+		resend:        ratelimit.New(3, 10*time.Minute), // per signed-in user
 	}
 }
 
@@ -51,6 +55,17 @@ func (h *Handler) Routes(r chi.Router) {
 	r.Get("/login", h.loginForm)
 	r.Post("/login", h.login)
 	r.Post("/logout", h.logout)
+	r.Get("/forgot", h.forgotForm)
+	r.Post("/forgot", h.forgot)
+	r.Get("/reset", h.resetForm)
+	r.Post("/reset", h.reset)
+	r.Get("/verify", h.verify)
+	r.Group(func(r chi.Router) {
+		r.Use(auth.Require)
+		r.Post("/account/resend-verification", h.resendVerification)
+		r.Post("/account/profile", h.updateProfile)
+		r.Post("/account/password", h.changePassword)
+	})
 	r.Group(func(r chi.Router) {
 		r.Use(auth.Require)
 		r.Get("/account", h.account)
@@ -66,14 +81,22 @@ func (h *Handler) Authenticate(next nethttp.Handler) nethttp.Handler {
 	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
 		if tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
 			if c, err := h.signer.Verify(tok); err == nil {
-				r = r.WithContext(auth.WithClaims(r.Context(), c))
+				if c, ok := h.live(r, c); ok {
+					r = r.WithContext(auth.WithClaims(r.Context(), c))
+				}
 			}
 			next.ServeHTTP(w, r)
 			return
 		}
 		if ck, err := r.Cookie(accessCookie); err == nil {
 			if c, err := h.signer.Verify(ck.Value); err == nil {
-				next.ServeHTTP(w, r.WithContext(auth.WithClaims(r.Context(), c)))
+				if c, ok := h.live(r, c); ok {
+					next.ServeHTTP(w, r.WithContext(auth.WithClaims(r.Context(), c)))
+					return
+				}
+				// A valid token for an account that is disabled or deleted: end the session.
+				h.clearCookies(w)
+				next.ServeHTTP(w, r)
 				return
 			}
 		}
@@ -82,12 +105,30 @@ func (h *Handler) Authenticate(next nethttp.Handler) nethttp.Handler {
 			if err != nil {
 				h.clearCookies(w)
 			} else if c, err := h.signer.Verify(sess.AccessToken); err == nil {
-				h.setCookies(w, sess)
-				r = r.WithContext(auth.WithClaims(r.Context(), c))
+				if c, ok := h.live(r, c); ok {
+					h.setCookies(w, sess)
+					r = r.WithContext(auth.WithClaims(r.Context(), c))
+				}
 			}
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// live replaces the token's claims with the account's current standing: a
+// demoted admin loses access at once, and a disabled or deleted account is no
+// longer authenticated. If the check itself fails we fail closed.
+func (h *Handler) live(r *nethttp.Request, c auth.Claims) (auth.Claims, bool) {
+	p, err := h.svc.Principal(r.Context(), c.UserID)
+	if err != nil {
+		h.log.Error("principal lookup", "err", err)
+		return c, false
+	}
+	if !p.Active {
+		return c, false
+	}
+	c.Role = p.Role
+	return c, true
 }
 
 func (h *Handler) setCookies(w nethttp.ResponseWriter, s app.Session) {
@@ -167,6 +208,10 @@ func (h *Handler) login(w nethttp.ResponseWriter, r *nethttp.Request) {
 			httpx.Render(w, r, nethttp.StatusUnauthorized, LoginPage(email, next, err.Error()))
 			return
 		}
+		if errors.Is(err, domain.ErrAccountDisabled) {
+			httpx.Render(w, r, nethttp.StatusForbidden, LoginPage(email, next, err.Error()))
+			return
+		}
 		h.fail(w, r, err)
 		return
 	}
@@ -187,13 +232,49 @@ func (h *Handler) account(w nethttp.ResponseWriter, r *nethttp.Request) {
 }
 
 func (h *Handler) renderAccount(w nethttp.ResponseWriter, r *nethttp.Request, form AddressForm, msg string, status int) {
+	h.renderAccountWith(w, r, AccountView{AddressForm: form, AddressError: msg}, status)
+}
+
+func (h *Handler) renderAccountWith(w nethttp.ResponseWriter, r *nethttp.Request, v AccountView, status int) {
 	c, _ := auth.FromContext(r.Context())
+	u, err := h.svc.User(r.Context(), c.UserID)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
 	addrs, err := h.svc.ListAddresses(r.Context(), c.UserID)
 	if err != nil {
 		h.fail(w, r, err)
 		return
 	}
-	httpx.Render(w, r, status, AccountPage(addrs, form, msg))
+	v.User, v.Addresses = u, addrs
+	if v.Notice == "" {
+		v.Notice = noticeText(r.URL.Query().Get("notice"))
+	}
+	switch r.URL.Query().Get("delete") {
+	case "wrong-password":
+		v.DeleteError = "That password is not correct."
+	case "last-admin":
+		v.DeleteError = "You are the only administrator. Make someone else an admin before deleting this account."
+	}
+	httpx.Render(w, r, status, AccountPage(v))
+}
+
+// noticeText maps the fixed ?notice= codes to banner text (never echoes arbitrary input).
+func noticeText(code string) string {
+	switch code {
+	case "verification-sent":
+		return "We sent a confirmation link to your email address."
+	case "profile-saved":
+		return "Your profile was updated."
+	case "password-changed":
+		return "Your password was changed. Other devices were signed out."
+	case "password-set":
+		return "Your password is set. You are signed in."
+	case "deleted-failed":
+		return ""
+	}
+	return ""
 }
 
 func (h *Handler) addAddress(w nethttp.ResponseWriter, r *nethttp.Request) {

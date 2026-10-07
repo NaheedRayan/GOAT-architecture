@@ -1,0 +1,119 @@
+package admin
+
+import (
+	"strconv"
+	"strings"
+
+	"github.com/NaheedRayan/goat-architecture/internal/content"
+	"github.com/NaheedRayan/goat-architecture/internal/platform/ui"
+)
+
+templ PagesPage(ps []content.Page) {
+	@shell("Pages") {
+		<div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+			<div>
+				<h1 class="text-xl font-bold">Pages</h1>
+				<p class="text-sm text-stone-500">Terms, privacy, returns and other information pages. Published pages appear in the site footer.</p>
+			</div>
+			<a class="btn-primary" href="/admin/pages/new">New page</a>
+		</div>
+		if unpublished(ps) > 0 {
+			<p class="mb-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+				{ strconv.Itoa(unpublished(ps)) } page(s) are still drafts. The starter texts are <strong>templates, not legal advice</strong>: fill in the [[placeholders]], have them reviewed for the countries you sell in, then publish. Payment providers usually require published terms, privacy and returns pages.
+			</p>
+		}
+		<div class="card overflow-x-auto">
+			<table class="w-full text-left text-sm">
+				<thead class="border-b border-stone-200 bg-stone-50 text-xs uppercase text-stone-500">
+					<tr><th class="p-3">Title</th><th class="p-3">URL</th><th class="p-3">Status</th><th class="p-3">Updated</th><th class="p-3"></th></tr>
+				</thead>
+				<tbody class="divide-y divide-stone-100">
+					for _, p := range ps {
+						<tr>
+							<td class="p-3 font-medium">{ p.Title }</td>
+							<td class="p-3 font-mono text-xs text-stone-500">/pages/{ p.Slug }</td>
+							<td class="p-3">
+								if p.Published {
+									<span class="badge bg-emerald-100 text-emerald-800">Published</span>
+								} else if len(content.Placeholders(p.Title+"\n"+p.Body)) > 0 {
+									<span class="badge bg-amber-100 text-amber-800">Draft: needs details</span>
+								} else {
+									<span class="badge bg-stone-200 text-stone-600">Draft</span>
+								}
+							</td>
+							<td class="p-3 whitespace-nowrap text-stone-500">{ p.UpdatedAt.Format("2 Jan 2006") }</td>
+							<td class="p-3 text-right whitespace-nowrap">
+								if p.Published {
+									<a class="mr-3 text-stone-500 hover:underline" href={ templ.SafeURL("/pages/" + p.Slug) } target="_blank" rel="noopener">View</a>
+								}
+								<a class="font-medium text-brand-700" href={ templ.SafeURL("/admin/pages/" + p.ID.String()) }>Edit</a>
+							</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		</div>
+	}
+}
+
+templ PageEditPage(f PageForm, placeholders []string, errMsg string) {
+	@shell("Page") {
+		<form method="post" action={ templ.SafeURL(pageAction(f)) } class="card space-y-4 p-6">
+			<h1 class="text-xl font-bold">
+				if f.ID == "" {
+					New page
+				} else {
+					Edit page
+				}
+			</h1>
+			if len(placeholders) > 0 {
+				<div class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+					<p class="font-medium">This page still has placeholders to fill in:</p>
+					<p class="mt-1 font-mono text-xs">{ strings.Join(placeholders, "  ") }</p>
+					<p class="mt-1">It cannot be published until they are replaced.</p>
+				</div>
+			}
+			<div class="grid gap-4 sm:grid-cols-[1fr_16rem]">
+				<div>
+					<label class="label" for="title">Title</label>
+					<input class="input" id="title" name="title" value={ f.Title } maxlength="120" required/>
+				</div>
+				<div>
+					<label class="label" for="slug">URL</label>
+					<div class="flex items-center gap-1"><span class="text-sm text-stone-500">/pages/</span><input class="input" id="slug" name="slug" value={ f.Slug } maxlength="49" required pattern="[a-z0-9][a-z0-9\-]{1,48}"/></div>
+				</div>
+			</div>
+			<div>
+				<label class="label" for="body">Text</label>
+				<textarea class="input font-mono" id="body" name="body" rows="22" maxlength="50000">{ f.Body }</textarea>
+				<p class="mt-1 text-xs text-stone-500">Formatting: <code># Heading</code>, <code>## Subheading</code>, <code>- bullet</code>, <code>1. numbered</code>, <code>**bold**</code>, <code>*italic*</code>, <code>[link text](https://…)</code>. Anything else is shown as plain text.</p>
+			</div>
+			<label class="flex items-center gap-2 text-sm"><input type="checkbox" name="published" value="1" checked?={ f.Published }/> Published (shown in the footer)</label>
+			@ui.FieldError(errMsg)
+			<div class="flex flex-wrap items-center gap-3">
+				<button class="btn-primary" type="submit">Save</button>
+				<a class="btn-secondary" href="/admin/pages">Back</a>
+				if f.ID != "" {
+					<button class="btn-danger ml-auto" type="submit" formaction={ templ.SafeURL("/admin/pages/" + f.ID + "/delete") } formnovalidate data-msg="Delete this page?" @click="if (!confirm($el.dataset.msg)) $event.preventDefault()">Delete page</button>
+				}
+			</div>
+		</form>
+	}
+}
+
+func pageAction(f PageForm) string {
+	if f.ID == "" {
+		return "/admin/pages"
+	}
+	return "/admin/pages/" + f.ID
+}
+
+func unpublished(ps []content.Page) int {
+	n := 0
+	for _, p := range ps {
+		if !p.Published {
+			n++
+		}
+	}
+	return n
+}

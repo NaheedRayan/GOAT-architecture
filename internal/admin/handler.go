@@ -1,5 +1,9 @@
 // Package admin is the back office. It owns no data: it composes the public
-// APIs of catalog, inventory and order behind an admin-only router.
+// APIs of the other modules behind a role-aware router.
+//
+// Roles: staff run the day-to-day shop (catalogue, stock, orders, shipping);
+// admins additionally handle money and configuration (refunds, returns, users,
+// delivery methods, coupons, imports and the audit trail).
 package admin
 
 import (
@@ -7,386 +11,126 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"github.com/NaheedRayan/goat-architecture/internal/catalog"
+	"github.com/NaheedRayan/goat-architecture/internal/content"
+	"github.com/NaheedRayan/goat-architecture/internal/identity"
 	"github.com/NaheedRayan/goat-architecture/internal/inventory"
 	"github.com/NaheedRayan/goat-architecture/internal/order"
+	"github.com/NaheedRayan/goat-architecture/internal/platform/audit"
 	"github.com/NaheedRayan/goat-architecture/internal/platform/auth"
 	"github.com/NaheedRayan/goat-architecture/internal/platform/httpx"
-	"github.com/NaheedRayan/goat-architecture/internal/platform/money"
 	"github.com/NaheedRayan/goat-architecture/internal/platform/ui"
+	"github.com/NaheedRayan/goat-architecture/internal/promotion"
+	"github.com/NaheedRayan/goat-architecture/internal/review"
+	"github.com/NaheedRayan/goat-architecture/internal/shipping"
 )
 
 type Options struct {
-	Catalog   catalog.API
-	Inventory inventory.API
-	Orders    order.API
-	Log       *slog.Logger
+	Catalog           catalog.API
+	Inventory         inventory.API
+	Orders            order.API
+	Shipping          shipping.API
+	Promotions        promotion.API
+	Identity          identity.API
+	Content           content.API
+	Reviews           review.API
+	Audit             *audit.Logger
+	LowStockThreshold int
+	Currency          string
+	Log               *slog.Logger
 }
 
 type Module struct{ o Options }
 
-func New(o Options) *Module { return &Module{o: o} }
+func New(o Options) *Module {
+	if o.LowStockThreshold <= 0 {
+		o.LowStockThreshold = 5
+	}
+	return &Module{o: o}
+}
 
 func (m *Module) Routes(r chi.Router) {
 	r.Route("/admin", func(r chi.Router) {
-		r.Use(auth.RequireRole(auth.RoleAdmin))
+		r.Use(auth.RequireAnyRole(auth.RoleAdmin, auth.RoleStaff))
+
+		// ---- staff and admins ----
 		r.Get("/", m.dashboard)
+
 		r.Get("/products", m.products)
 		r.Get("/products/new", m.productForm)
 		r.Post("/products", m.createProduct)
 		r.Get("/products/{id}/edit", m.productForm)
 		r.Post("/products/{id}", m.updateProduct)
-		r.Post("/products/{id}/stock", m.addStock)
-		r.Post("/products/{id}/stock/{lot}", m.setStock)
+		r.Post("/products/{id}/images", m.addImage)
+		r.Post("/products/{id}/images/{img}/delete", m.removeImage)
+		r.Post("/products/{id}/images/{img}/move", m.moveImage)
+		r.Post("/products/{id}/variants", m.addVariant)
+		r.Post("/variants/{vid}", m.updateVariant)
+		r.Post("/variants/{vid}/stock", m.receiveStock)
+		r.Post("/variants/{vid}/stock/{lot}", m.setStock)
 		r.Post("/products/{id}/delete", m.archiveProduct)
 		r.Post("/products/{id}/restore", m.restoreProduct)
+
 		r.Get("/categories", m.categories)
 		r.Post("/categories", m.createCategory)
 		r.Post("/categories/{id}", m.renameCategory)
 		r.Post("/categories/{id}/delete", m.deleteCategory)
+
 		r.Get("/orders", m.orders)
+		r.Get("/orders/export.csv", m.exportOrders)
 		r.Get("/orders/{id}", m.orderDetail)
 		r.Post("/orders/{id}/ship", m.ship)
+		r.Post("/orders/{id}/deliver", m.deliver)
+		r.Post("/orders/{id}/cancel", m.cancelOrder)
+		r.Post("/orders/{id}/note", m.orderNote)
+		r.Post("/orders/{id}/return/reject", m.rejectReturn)
+
+		// ---- admins only: money and configuration ----
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireRole(auth.RoleAdmin))
+			r.Post("/orders/{id}/refund", m.refundOrder)
+			r.Post("/orders/{id}/return/approve", m.approveReturn)
+
+			r.Get("/users", m.users)
+			r.Post("/users/{id}/role", m.setUserRole)
+			r.Post("/users/{id}/status", m.setUserStatus)
+
+			r.Get("/shipping", m.shippingMethods)
+			r.Post("/shipping", m.createShipping)
+			r.Post("/shipping/{id}", m.updateShipping)
+			r.Post("/shipping/{id}/delete", m.deleteShipping)
+
+			r.Get("/coupons", m.coupons)
+			r.Post("/coupons", m.createCoupon)
+			r.Post("/coupons/{id}", m.updateCoupon)
+			r.Post("/coupons/{id}/delete", m.deleteCoupon)
+
+			r.Get("/pages", m.pages)
+			r.Get("/pages/new", m.pageNew)
+			r.Post("/pages", m.pageSave)
+			r.Get("/pages/{id}", m.pageEdit)
+			r.Post("/pages/{id}", m.pageSave)
+			r.Post("/pages/{id}/delete", m.pageDelete)
+
+			r.Get("/reviews", m.reviews)
+			r.Post("/reviews/{id}/status", m.reviewStatus)
+			r.Post("/reviews/{id}/delete", m.reviewDelete)
+
+			r.Get("/audit", m.auditLog)
+
+			r.Get("/import", m.importForm)
+			r.Get("/import/sample.csv", m.importSample)
+			r.Post("/import", m.importProducts)
+		})
 	})
 }
 
-var orderStatuses = []string{order.StatusAwaitingPayment, order.StatusPaid, order.StatusFulfilling, order.StatusShipped, order.StatusCancelled}
-
-func (m *Module) dashboard(w http.ResponseWriter, r *http.Request) {
-	counts, err := m.o.Orders.CountByStatus(r.Context())
-	if err != nil {
-		m.fail(w, r, err)
-		return
-	}
-	stats := make([]StatusCount, 0, len(orderStatuses))
-	for _, s := range orderStatuses {
-		stats = append(stats, StatusCount{Status: s, N: counts[s]})
-	}
-	httpx.Render(w, r, http.StatusOK, DashboardPage(stats))
-}
-
-func (m *Module) products(w http.ResponseWriter, r *http.Request) {
-	deleted := r.URL.Query().Get("view") == "deleted"
-	page, err := m.o.Catalog.List(r.Context(), catalog.Filter{
-		IncludeInactive: true, Archived: deleted, PerPage: 60, Page: atoi(r.URL.Query().Get("page"), 1),
-	})
-	if err != nil {
-		m.fail(w, r, err)
-		return
-	}
-	ids := make([]uuid.UUID, len(page.Products))
-	for i, p := range page.Products {
-		ids[i] = p.ID
-	}
-	stock, err := m.o.Inventory.Available(r.Context(), ids)
-	if err != nil {
-		m.fail(w, r, err)
-		return
-	}
-	cats, err := m.o.Catalog.Categories(r.Context())
-	if err != nil {
-		m.fail(w, r, err)
-		return
-	}
-	httpx.Render(w, r, http.StatusOK, ProductsPage(page, stock, cats, deleted))
-}
-
-func (m *Module) productForm(w http.ResponseWriter, r *http.Request) {
-	form := ProductForm{Active: true}
-	var lots []inventory.Lot
-	if idStr := chi.URLParam(r, "id"); idStr != "" {
-		id, err := uuid.Parse(idStr)
-		if err != nil {
-			http.NotFound(w, r)
-			return
-		}
-		p, err := m.o.Catalog.ByID(r.Context(), id)
-		if errors.Is(err, catalog.ErrNotFound) {
-			http.NotFound(w, r)
-			return
-		}
-		if err != nil {
-			m.fail(w, r, err)
-			return
-		}
-		form = formFromProduct(p)
-		if lots, err = m.o.Inventory.Lots(r.Context(), id); err != nil {
-			m.fail(w, r, err)
-			return
-		}
-	}
-	m.renderForm(w, r, form, lots, "", http.StatusOK)
-}
-
-func (m *Module) renderForm(w http.ResponseWriter, r *http.Request, f ProductForm, lots []inventory.Lot, msg string, status int) {
-	cats, err := m.o.Catalog.Categories(r.Context())
-	if err != nil {
-		m.fail(w, r, err)
-		return
-	}
-	httpx.Render(w, r, status, ProductFormPage(f, cats, lots, msg))
-}
-
-func readForm(r *http.Request) (ProductForm, catalog.ProductInput, error) {
-	f := ProductForm{
-		ID: chi.URLParam(r, "id"), Name: r.FormValue("name"), Slug: r.FormValue("slug"), CategoryID: r.FormValue("category_id"),
-		Price: r.FormValue("price"), ImageURL: r.FormValue("image_url"), Description: r.FormValue("description"),
-		Active: r.FormValue("active") != "",
-	}
-	in := catalog.ProductInput{Slug: f.Slug, Name: f.Name, Description: f.Description, ImageURL: f.ImageURL, Active: f.Active}
-	cents, err := money.ParseCents(f.Price)
-	if err != nil {
-		return f, in, catalog.ValidationError("price must be a number like 12.50")
-	}
-	in.PriceCents = cents
-	if f.CategoryID != "" {
-		cid, err := uuid.Parse(f.CategoryID)
-		if err != nil {
-			return f, in, catalog.ValidationError("unknown category")
-		}
-		in.CategoryID = &cid
-	}
-	return f, in, nil
-}
-
-func (m *Module) createProduct(w http.ResponseWriter, r *http.Request) {
-	f, in, err := readForm(r)
-	if err == nil {
-		var p catalog.Product
-		if p, err = m.o.Catalog.CreateProduct(r.Context(), in); err == nil {
-			http.Redirect(w, r, "/admin/products/"+p.ID.String()+"/edit", http.StatusSeeOther)
-			return
-		}
-	}
-	m.formError(w, r, f, nil, err)
-}
-
-func (m *Module) updateProduct(w http.ResponseWriter, r *http.Request) {
-	id, perr := uuid.Parse(chi.URLParam(r, "id"))
-	if perr != nil {
-		http.NotFound(w, r)
-		return
-	}
-	f, in, err := readForm(r)
-	if err == nil {
-		if err = m.o.Catalog.UpdateProduct(r.Context(), id, in); err == nil {
-			http.Redirect(w, r, "/admin/products", http.StatusSeeOther)
-			return
-		}
-	}
-	lots, _ := m.o.Inventory.Lots(r.Context(), id)
-	m.formError(w, r, f, lots, err)
-}
-
-func (m *Module) formError(w http.ResponseWriter, r *http.Request, f ProductForm, lots []inventory.Lot, err error) {
-	var ve catalog.ValidationError
-	switch {
-	case errors.As(err, &ve):
-		m.renderForm(w, r, f, lots, ve.Error(), http.StatusUnprocessableEntity)
-	case errors.Is(err, catalog.ErrSlugTaken):
-		m.renderForm(w, r, f, lots, err.Error(), http.StatusConflict)
-	case errors.Is(err, catalog.ErrCategoryGone):
-		f.CategoryID = "" // the picked category was deleted meanwhile
-		m.renderForm(w, r, f, lots, "That category was just deleted. Pick another one and save again.", http.StatusConflict)
-	case errors.Is(err, catalog.ErrNotFound):
-		http.NotFound(w, r)
-	default:
-		m.fail(w, r, err)
-	}
-}
-
-// archiveProduct is the "Delete" action: the product leaves the store but
-// order history is untouched. Repeating it (double click) is harmless.
-func (m *Module) archiveProduct(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	if err := m.o.Catalog.ArchiveProduct(r.Context(), id); err != nil && !errors.Is(err, catalog.ErrNotFound) {
-		m.fail(w, r, err)
-		return
-	}
-	http.Redirect(w, r, "/admin/products", http.StatusSeeOther)
-}
-
-func (m *Module) restoreProduct(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	if err := m.o.Catalog.RestoreProduct(r.Context(), id); err != nil && !errors.Is(err, catalog.ErrNotFound) {
-		m.fail(w, r, err)
-		return
-	}
-	http.Redirect(w, r, "/admin/products/"+id.String()+"/edit", http.StatusSeeOther)
-}
-
-func (m *Module) addStock(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	qty, qerr := strconv.Atoi(r.FormValue("quantity"))
-	if err != nil || qerr != nil || qty <= 0 || qty > 1_000_000 {
-		http.Error(w, "quantity must be a positive number", http.StatusUnprocessableEntity)
-		return
-	}
-	if err := m.o.Inventory.AddLot(r.Context(), id, r.FormValue("label"), qty); err != nil {
-		m.fail(w, r, err)
-		return
-	}
-	http.Redirect(w, r, "/admin/products/"+id.String()+"/edit", http.StatusSeeOther)
-}
-
-func (m *Module) setStock(w http.ResponseWriter, r *http.Request) {
-	pid, err1 := uuid.Parse(chi.URLParam(r, "id"))
-	lot, err2 := uuid.Parse(chi.URLParam(r, "lot"))
-	qty, err3 := strconv.Atoi(strings.TrimSpace(r.FormValue("quantity")))
-	if err1 != nil || err2 != nil {
-		http.NotFound(w, r)
-		return
-	}
-	if err3 != nil {
-		http.Error(w, "quantity must be a whole number", http.StatusUnprocessableEntity)
-		return
-	}
-	switch err := m.o.Inventory.SetLotQuantity(r.Context(), pid, lot, qty); {
-	case errors.Is(err, inventory.ErrInvalidQuantity):
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-		return
-	case errors.Is(err, inventory.ErrLotNotFound):
-		http.NotFound(w, r)
-		return
-	case err != nil:
-		m.fail(w, r, err)
-		return
-	}
-	http.Redirect(w, r, "/admin/products/"+pid.String()+"/edit", http.StatusSeeOther)
-}
-
-func (m *Module) renderCategories(w http.ResponseWriter, r *http.Request, newName, errMsg string, status int) {
-	stats, err := m.o.Catalog.CategoryStats(r.Context())
-	if err != nil {
-		m.fail(w, r, err)
-		return
-	}
-	httpx.Render(w, r, status, CategoriesPage(stats, newName, errMsg))
-}
-
-func (m *Module) categories(w http.ResponseWriter, r *http.Request) {
-	m.renderCategories(w, r, "", "", http.StatusOK)
-}
-
-// categoryError renders user-correctable category problems on the page itself.
-func (m *Module) categoryError(w http.ResponseWriter, r *http.Request, newName string, err error) {
-	var ve catalog.ValidationError
-	switch {
-	case errors.As(err, &ve):
-		m.renderCategories(w, r, newName, ve.Error(), http.StatusUnprocessableEntity)
-	case errors.Is(err, catalog.ErrCategoryExists):
-		m.renderCategories(w, r, newName, err.Error(), http.StatusConflict)
-	case errors.Is(err, catalog.ErrNotFound):
-		m.renderCategories(w, r, newName, "That category no longer exists.", http.StatusNotFound)
-	default:
-		m.fail(w, r, err)
-	}
-}
-
-func (m *Module) createCategory(w http.ResponseWriter, r *http.Request) {
-	name := r.FormValue("name")
-	if _, err := m.o.Catalog.CreateCategory(r.Context(), name); err != nil {
-		m.categoryError(w, r, name, err)
-		return
-	}
-	http.Redirect(w, r, "/admin/categories", http.StatusSeeOther)
-}
-
-func (m *Module) renameCategory(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	if err := m.o.Catalog.RenameCategory(r.Context(), id, r.FormValue("name")); err != nil {
-		m.categoryError(w, r, "", err)
-		return
-	}
-	http.Redirect(w, r, "/admin/categories", http.StatusSeeOther)
-}
-
-func (m *Module) deleteCategory(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	// Deleting twice (double click, stale page) is not an error.
-	if err := m.o.Catalog.DeleteCategory(r.Context(), id); err != nil && !errors.Is(err, catalog.ErrNotFound) {
-		m.fail(w, r, err)
-		return
-	}
-	http.Redirect(w, r, "/admin/categories", http.StatusSeeOther)
-}
-
-const ordersPerPage = 50
-
-func (m *Module) orders(w http.ResponseWriter, r *http.Request) {
-	status := r.URL.Query().Get("status")
-	page := min(atoi(r.URL.Query().Get("page"), 1), 10000)
-	// Ask for one extra row to learn whether a next page exists.
-	os, err := m.o.Orders.List(r.Context(), status, ordersPerPage+1, (page-1)*ordersPerPage)
-	if err != nil {
-		m.fail(w, r, err)
-		return
-	}
-	hasNext := len(os) > ordersPerPage
-	if hasNext {
-		os = os[:ordersPerPage]
-	}
-	httpx.Render(w, r, http.StatusOK, OrdersPage(os, status, page, hasNext))
-}
-
-func (m *Module) orderDetail(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	o, err := m.o.Orders.Get(r.Context(), id)
-	if errors.Is(err, order.ErrNotFound) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		m.fail(w, r, err)
-		return
-	}
-	httpx.Render(w, r, http.StatusOK, OrderDetailPage(o))
-}
-
-func (m *Module) ship(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	switch err := m.o.Orders.Ship(r.Context(), id); {
-	case errors.Is(err, order.ErrNotFound):
-		http.NotFound(w, r)
-		return
-	case errors.Is(err, order.ErrInvalidTransition):
-		http.Error(w, "only orders being prepared can be shipped", http.StatusConflict)
-		return
-	case err != nil:
-		m.fail(w, r, err)
-		return
-	}
-	http.Redirect(w, r, "/admin/orders/"+id.String(), http.StatusSeeOther)
-}
+// ---- helpers shared by the admin handlers ----
 
 func (m *Module) fail(w http.ResponseWriter, r *http.Request, err error) {
 	m.o.Log.Error("admin http", "path", r.URL.Path, "err", err)
@@ -399,3 +143,128 @@ func atoi(s string, def int) int {
 	}
 	return def
 }
+
+func actor(r *http.Request) auth.Claims {
+	c, _ := auth.FromContext(r.Context())
+	return c
+}
+
+func isAdmin(r *http.Request) bool { return actor(r).Role == auth.RoleAdmin }
+
+func (m *Module) forbid(w http.ResponseWriter, r *http.Request) {
+	httpx.Render(w, r, http.StatusForbidden, ui.ErrorPage(403, "That action needs an administrator."))
+}
+
+func uuidParam(r *http.Request, name string) (uuid.UUID, bool) {
+	id, err := uuid.Parse(chi.URLParam(r, name))
+	return id, err == nil
+}
+
+// audit records a back-office action by the signed-in admin or staff member.
+func (m *Module) audit(r *http.Request, action, entity, entityID string, detail map[string]any) {
+	if m.o.Audit == nil {
+		return
+	}
+	e := audit.Entry{Action: action, Entity: entity, EntityID: entityID, Detail: detail, IP: httpx.ClientIP(r)}
+	if c, ok := auth.FromContext(r.Context()); ok {
+		uid := c.UserID
+		e.ActorID, e.ActorRole = &uid, c.Role
+	}
+	m.o.Audit.Record(r.Context(), e)
+}
+
+// ---- dashboard ----
+
+var orderStatuses = []string{
+	order.StatusAwaitingPayment, order.StatusPaid, order.StatusFulfilling, order.StatusShipped,
+	order.StatusDelivered, order.StatusCancelled, order.StatusRefunded,
+}
+
+func (m *Module) dashboard(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	days := atoi(r.URL.Query().Get("days"), 30)
+	if days != 7 && days != 30 && days != 90 {
+		days = 30
+	}
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	from, to := today.AddDate(0, 0, -(days-1)), today.AddDate(0, 0, 1)
+
+	counts, err := m.o.Orders.CountByStatus(ctx)
+	if err != nil {
+		m.fail(w, r, err)
+		return
+	}
+	pending, err := m.o.Orders.PendingReturns(ctx)
+	if err != nil {
+		m.fail(w, r, err)
+		return
+	}
+	rep, err := m.o.Orders.Report(ctx, from, to)
+	if err != nil {
+		m.fail(w, r, err)
+		return
+	}
+	low, err := m.lowStock(r)
+	if err != nil {
+		m.fail(w, r, err)
+		return
+	}
+	drafts, _ := m.o.Content.UnpublishedCount(ctx)
+	vm := DashboardVM{DraftPages: drafts, Currency: m.o.Currency, Days: days, Report: rep, PendingReturns: pending, LowStock: low, Threshold: m.o.LowStockThreshold, IsAdmin: isAdmin(r)}
+	for _, s := range orderStatuses {
+		vm.Counts = append(vm.Counts, StatusCount{Status: s, N: counts[s]})
+	}
+	vm.Series = fillDays(rep.ByDay, from, days)
+	httpx.Render(w, r, http.StatusOK, DashboardPage(vm))
+}
+
+// lowStock lists live variants at or below the alert threshold, with names.
+func (m *Module) lowStock(r *http.Request) ([]LowStockRow, error) {
+	levels, err := m.o.Inventory.LowStock(r.Context(), m.o.LowStockThreshold, 50)
+	if err != nil || len(levels) == 0 {
+		return nil, err
+	}
+	ids := make([]uuid.UUID, len(levels))
+	for i, l := range levels {
+		ids[i] = l.VariantID
+	}
+	infos, err := m.o.Catalog.VariantInfos(r.Context(), ids)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[uuid.UUID]catalog.VariantInfo, len(infos))
+	for _, v := range infos {
+		byID[v.VariantID] = v
+	}
+	var rows []LowStockRow
+	for _, l := range levels {
+		v, ok := byID[l.VariantID]
+		if !ok || !v.Active { // deleted or hidden: not worth an alert
+			continue
+		}
+		rows = append(rows, LowStockRow{ProductID: v.ProductID, Name: v.ProductName, Label: v.Label, SKU: v.SKU, Available: l.Available})
+		if len(rows) == 20 {
+			break
+		}
+	}
+	return rows, nil
+}
+
+// fillDays turns the sparse per-day rows into a continuous series (zero for quiet days).
+func fillDays(rows []order.DayStat, from time.Time, days int) []order.DayStat {
+	byDay := make(map[string]order.DayStat, len(rows))
+	for _, d := range rows {
+		byDay[d.Day.UTC().Format("2006-01-02")] = d
+	}
+	out := make([]order.DayStat, days)
+	for i := range out {
+		day := from.AddDate(0, 0, i)
+		out[i] = order.DayStat{Day: day}
+		if d, ok := byDay[day.Format("2006-01-02")]; ok {
+			out[i] = order.DayStat{Day: day, Orders: d.Orders, RevenueCents: d.RevenueCents}
+		}
+	}
+	return out
+}
+
+var errNotFound = errors.New("not found")

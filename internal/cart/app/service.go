@@ -20,6 +20,7 @@ type Repository interface {
 	AddItem(ctx context.Context, cartID, variantID uuid.UUID, qty int) error // atomic, clamps at MaxQuantity
 	Merge(ctx context.Context, from, to string) error                        // atomic
 	PurgeGuests(ctx context.Context, before time.Time) (int64, error)
+	ClaimAbandoned(ctx context.Context, idleBefore, notOlderThan time.Time, limit int) ([]domain.Abandoned, error)
 	DeleteItem(ctx context.Context, cartID, variantID uuid.UUID) error
 	Clear(ctx context.Context, cartID uuid.UUID) error
 	DeleteCart(ctx context.Context, owner string) error
@@ -168,5 +169,18 @@ func (s *Service) PurgeStaleGuests(ctx context.Context) (int64, error) {
 	return s.repo.PurgeGuests(ctx, time.Now().Add(-30*24*time.Hour))
 }
 
+// DeleteUserCart removes a deleted account's cart.
+func (s *Service) DeleteUserCart(ctx context.Context, userID uuid.UUID) error {
+	return s.repo.DeleteCart(ctx, domain.UserOwner(userID))
+}
+
 // NewGuestID returns a fresh identifier for an anonymous cart cookie.
 func NewGuestID() uuid.UUID { return id.New() }
+
+// ClaimAbandoned finds signed-in users' carts that have sat idle for idleFor (but not
+// longer than maxAge), marks them as reminded and returns them. Call it inside the
+// transaction that queues the reminder emails, so a cart is reminded exactly once.
+func (s *Service) ClaimAbandoned(ctx context.Context, idleFor, maxAge time.Duration, limit int) ([]domain.Abandoned, error) {
+	now := time.Now()
+	return s.repo.ClaimAbandoned(ctx, now.Add(-idleFor), now.Add(-maxAge), limit)
+}

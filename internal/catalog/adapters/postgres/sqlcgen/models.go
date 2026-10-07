@@ -11,10 +11,16 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AlertsSent struct {
+	Key    string
+	SentAt time.Time
+}
+
 type CartCart struct {
-	ID        uuid.UUID
-	Owner     string
-	UpdatedAt time.Time
+	ID         uuid.UUID
+	Owner      string
+	UpdatedAt  time.Time
+	RemindedAt *time.Time
 }
 
 type CartCartItem struct {
@@ -42,6 +48,17 @@ type CatalogProduct struct {
 	CreatedAt   time.Time
 	ArchivedAt  *time.Time
 	OptionName  string
+	ThumbUrl    string
+}
+
+type CatalogProductImage struct {
+	ID        uuid.UUID
+	ProductID uuid.UUID
+	Url       string
+	ThumbUrl  string
+	Alt       string
+	Position  int32
+	CreatedAt time.Time
 }
 
 type CatalogVariant struct {
@@ -53,6 +70,27 @@ type CatalogVariant struct {
 	Position   int32
 	Active     bool
 	CreatedAt  time.Time
+}
+
+type ContentPage struct {
+	ID        uuid.UUID
+	Slug      string
+	Title     string
+	Body      string
+	Published bool
+	Position  int32
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type IdentityActionToken struct {
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	Kind      string
+	TokenHash []byte
+	ExpiresAt time.Time
+	UsedAt    *time.Time
+	CreatedAt time.Time
 }
 
 type IdentityAddress struct {
@@ -80,12 +118,16 @@ type IdentityRefreshToken struct {
 }
 
 type IdentityUser struct {
-	ID           uuid.UUID
-	Email        string
-	PasswordHash string
-	Name         string
-	Role         string
-	CreatedAt    time.Time
+	ID              uuid.UUID
+	Email           string
+	PasswordHash    string
+	Name            string
+	Role            string
+	CreatedAt       time.Time
+	EmailVerifiedAt *time.Time
+	Guest           bool
+	DisabledAt      *time.Time
+	CartReminders   bool
 }
 
 type InventoryReservation struct {
@@ -108,16 +150,47 @@ type InventoryStockLot struct {
 }
 
 type OrdersOrder struct {
-	ID             uuid.UUID
-	UserID         uuid.UUID
-	Status         string
-	TotalCents     int64
-	Currency       string
-	IdempotencyKey string
-	Shipping       []byte
-	PaymentID      *uuid.UUID
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID                uuid.UUID
+	UserID            uuid.UUID
+	Status            string
+	TotalCents        int64
+	Currency          string
+	IdempotencyKey    string
+	Shipping          []byte
+	PaymentID         *uuid.UUID
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	SubtotalCents     int64
+	DiscountCents     int64
+	ShippingCents     int64
+	TaxCents          int64
+	TaxInclusive      bool
+	ShippingMethod    string
+	CouponCode        string
+	PaymentMethod     string
+	ContactEmail      string
+	TrackingCarrier   string
+	TrackingNumber    string
+	TrackingUrl       string
+	ShippedAt         *time.Time
+	DeliveredAt       *time.Time
+	CancelledAt       *time.Time
+	RefundedAt        *time.Time
+	RefundCents       int64
+	AdminNote         string
+	ReturnStatus      string
+	ReturnReason      string
+	ReturnNote        string
+	ReturnRequestedAt *time.Time
+}
+
+type OrdersOrderEvent struct {
+	ID      uuid.UUID
+	OrderID uuid.UUID
+	At      time.Time
+	Kind    string
+	Detail  string
+	ActorID *uuid.UUID
 }
 
 type OrdersOrderItem struct {
@@ -142,6 +215,19 @@ type PaymentPayment struct {
 	Status      string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	Method      string
+}
+
+type PlatformAuditLog struct {
+	ID        uuid.UUID
+	At        time.Time
+	ActorID   *uuid.UUID
+	ActorRole string
+	Action    string
+	Entity    string
+	EntityID  string
+	Detail    []byte
+	Ip        string
 }
 
 type PlatformJob struct {
@@ -156,4 +242,59 @@ type PlatformJob struct {
 	LastError   pgtype.Text
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+}
+
+type PromotionCoupon struct {
+	ID               uuid.UUID
+	Code             string
+	Kind             string
+	Value            int64
+	MinSubtotalCents int64
+	StartsAt         *time.Time
+	EndsAt           *time.Time
+	MaxUses          *int32
+	MaxUsesPerUser   *int32
+	Active           bool
+	CreatedAt        time.Time
+}
+
+type PromotionRedemption struct {
+	ID            uuid.UUID
+	CouponID      uuid.UUID
+	OrderID       uuid.UUID
+	UserID        uuid.UUID
+	DiscountCents int64
+	CreatedAt     time.Time
+}
+
+type ReviewReview struct {
+	ID        uuid.UUID
+	ProductID uuid.UUID
+	UserID    uuid.UUID
+	Rating    int16
+	Title     string
+	Body      string
+	Author    string
+	Status    string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type ShippingMethod struct {
+	ID            uuid.UUID
+	Name          string
+	Description   string
+	PriceCents    int64
+	FreeOverCents *int64
+	MinDays       int32
+	MaxDays       int32
+	Active        bool
+	Position      int32
+	CreatedAt     time.Time
+}
+
+type WishlistItem struct {
+	UserID    uuid.UUID
+	ProductID uuid.UUID
+	CreatedAt time.Time
 }

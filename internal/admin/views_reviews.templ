@@ -1,0 +1,92 @@
+package admin
+
+import "strconv"
+
+templ ReviewsPage(rows []ReviewRow, status string, page int, hasNext bool) {
+	@shell("Reviews") {
+		<div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+			<div>
+				<h1 class="text-xl font-bold">Reviews</h1>
+				<p class="text-sm text-stone-500">Only customers who received a product can review it. Hide anything abusive; hidden reviews stay hidden even if the customer edits them.</p>
+			</div>
+			<nav class="flex gap-3 text-sm" aria-label="Filter">
+				<a class={ filterClass(status == "") } href="/admin/reviews">All</a>
+				<a class={ filterClass(status == "published") } href="/admin/reviews?status=published">Published</a>
+				<a class={ filterClass(status == "hidden") } href="/admin/reviews?status=hidden">Hidden</a>
+			</nav>
+		</div>
+		if len(rows) == 0 {
+			<p class="card p-8 text-center text-stone-500">No reviews.</p>
+		} else {
+			<div class="space-y-3">
+				for _, row := range rows {
+					<div class="card p-4">
+						<div class="flex flex-wrap items-start justify-between gap-3">
+							<div class="min-w-0">
+								<p class="text-sm">
+									<span class="text-amber-500" aria-hidden="true">{ stars(row.Review.Rating) }</span>
+									<span class="sr-only">{ strconv.Itoa(row.Review.Rating) } of 5 stars</span>
+									if row.ProductSlug != "" {
+										<a class="ml-2 font-medium text-brand-700 hover:underline" href={ templ.SafeURL("/products/" + row.ProductSlug) }>{ row.ProductName }</a>
+									} else {
+										<span class="ml-2 text-stone-500">{ row.ProductName }</span>
+									}
+								</p>
+								if row.Review.Title != "" {
+									<p class="mt-1 font-semibold">{ row.Review.Title }</p>
+								}
+								<p class="mt-1 whitespace-pre-line break-words text-stone-700">{ row.Review.Body }</p>
+								<p class="mt-2 text-xs text-stone-500">{ row.Review.Author } · { row.Review.CreatedAt.Format("2 Jan 2006") }</p>
+							</div>
+							<div class="flex items-center gap-2">
+								if row.Review.Status == "published" {
+									<span class="badge bg-emerald-100 text-emerald-800">Published</span>
+									<form method="post" action={ templ.SafeURL("/admin/reviews/" + row.Review.ID.String() + "/status") }>
+										<input type="hidden" name="status" value="hidden"/>
+										<button class="btn-secondary" type="submit">Hide</button>
+									</form>
+								} else {
+									<span class="badge bg-stone-200 text-stone-600">Hidden</span>
+									<form method="post" action={ templ.SafeURL("/admin/reviews/" + row.Review.ID.String() + "/status") }>
+										<input type="hidden" name="status" value="published"/>
+										<button class="btn-secondary" type="submit">Publish</button>
+									</form>
+								}
+								<form method="post" action={ templ.SafeURL("/admin/reviews/" + row.Review.ID.String() + "/delete") } onsubmit="return confirm('Delete this review permanently?')">
+									<button class="text-sm font-medium text-red-700 hover:underline" type="submit">Delete</button>
+								</form>
+							</div>
+						</div>
+					</div>
+				}
+			</div>
+		}
+		<div class="mt-4 flex gap-4 text-sm">
+			if page > 1 {
+				<a class="text-brand-700" href={ templ.SafeURL("/admin/reviews?status=" + status + "&page=" + strconv.Itoa(page-1)) }>← Newer</a>
+			}
+			if hasNext {
+				<a class="text-brand-700" href={ templ.SafeURL("/admin/reviews?status=" + status + "&page=" + strconv.Itoa(page+1)) }>Older →</a>
+			}
+		</div>
+	}
+}
+
+func filterClass(active bool) string {
+	if active {
+		return "font-semibold text-brand-700 underline"
+	}
+	return "text-stone-600 hover:text-brand-700"
+}
+
+func stars(n int) string {
+	s := ""
+	for i := 1; i <= 5; i++ {
+		if i <= n {
+			s += "★"
+		} else {
+			s += "☆"
+		}
+	}
+	return s
+}

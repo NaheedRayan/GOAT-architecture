@@ -74,13 +74,17 @@ func StatusLabel(status string) string {
 	case "awaiting_payment":
 		return "Awaiting payment"
 	case "paid":
-		return "Paid"
+		return "Confirmed"
 	case "fulfilling":
 		return "Preparing"
 	case "shipped":
 		return "Shipped"
+	case "delivered":
+		return "Delivered"
 	case "cancelled":
 		return "Cancelled"
+	case "refunded":
+		return "Refunded"
 	}
 	return status
 }
@@ -91,8 +95,10 @@ func statusClass(status string) string {
 		return "bg-amber-100 text-amber-800"
 	case "paid", "fulfilling":
 		return "bg-sky-100 text-sky-800"
-	case "shipped":
+	case "shipped", "delivered":
 		return "bg-emerald-100 text-emerald-800"
+	case "refunded":
+		return "bg-violet-100 text-violet-800"
 	}
 	return "bg-stone-200 text-stone-600"
 }

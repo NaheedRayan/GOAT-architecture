@@ -22,6 +22,12 @@ type Lot struct {
 	CreatedAt time.Time
 }
 
+// StockLevel is a variant's total available units.
+type StockLevel struct {
+	VariantID uuid.UUID
+	Available int
+}
+
 type Reservation struct {
 	ID        uuid.UUID
 	OrderID   uuid.UUID
@@ -35,6 +41,7 @@ const (
 	StatusReserved  = "reserved"
 	StatusCommitted = "committed"
 	StatusReleased  = "released"
+	StatusReturned  = "returned"
 )
 
 // InsufficientStockError reports which variant could not be fully reserved.

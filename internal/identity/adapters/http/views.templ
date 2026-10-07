@@ -1,7 +1,6 @@
 package http
 
 import (
-	"github.com/NaheedRayan/goat-architecture/internal/identity/domain"
 	"github.com/NaheedRayan/goat-architecture/internal/platform/ui"
 )
 
@@ -36,7 +35,7 @@ templ RegisterPage(f RegisterForm, errMsg string) {
 				@ui.FieldError(errMsg)
 				<button class="btn-primary w-full" type="submit">Create account</button>
 			</form>
-			<p class="mt-4 text-center text-sm text-stone-600">Already registered? <a class="font-medium text-brand-600" href="/login">Sign in</a></p>
+			<p class="mt-4 text-center text-sm text-stone-600">Already registered? <a class="font-medium text-brand-700" href="/login">Sign in</a></p>
 		</div>
 	}
 }
@@ -57,23 +56,166 @@ templ LoginPage(email, next, errMsg string) {
 				</div>
 				@ui.FieldError(errMsg)
 				<button class="btn-primary w-full" type="submit">Sign in</button>
+				<p class="text-center text-sm"><a class="text-brand-700 hover:underline" href="/forgot">Forgot your password?</a></p>
 			</form>
-			<p class="mt-4 text-center text-sm text-stone-600">New here? <a class="font-medium text-brand-600" href="/register">Create an account</a></p>
+			<p class="mt-4 text-center text-sm text-stone-600">New here? <a class="font-medium text-brand-700" href="/register">Create an account</a></p>
 		</div>
 	}
 }
 
-templ AccountPage(addrs []domain.Address, f AddressForm, errMsg string) {
+templ ForgotPage(email string, sent bool) {
+	@ui.Layout("Forgot password") {
+		<div class="mx-auto max-w-md">
+			<h1 class="mb-6 text-2xl font-bold">Reset your password</h1>
+			if sent {
+				<div class="card p-6" role="status">
+					<p class="font-medium">Check your inbox</p>
+					<p class="mt-2 text-sm text-stone-600">If an account exists for that email address, we have sent a link to choose a new password. It works once and expires in an hour.</p>
+					<a class="btn-secondary mt-4" href="/login">Back to sign in</a>
+				</div>
+			} else {
+				<form method="post" action="/forgot" class="card space-y-4 p-6">
+					<p class="text-sm text-stone-600">Enter the email address of your account and we will send you a link to choose a new password.</p>
+					<div>
+						<label class="label" for="email">Email</label>
+						<input class="input" id="email" type="email" name="email" value={ email } required autocomplete="email"/>
+					</div>
+					<button class="btn-primary w-full" type="submit">Send reset link</button>
+				</form>
+			}
+		</div>
+	}
+}
+
+templ ResetPage(token, errMsg string) {
+	@ui.Layout("Choose a new password") {
+		<div class="mx-auto max-w-md">
+			<h1 class="mb-6 text-2xl font-bold">Choose a new password</h1>
+			if token == "" {
+				@ui.FieldError(errMsg)
+				<a class="btn-primary mt-4" href="/forgot">Request a new link</a>
+			} else {
+				<form method="post" action="/reset" class="card space-y-4 p-6">
+					<input type="hidden" name="token" value={ token }/>
+					<div>
+						<label class="label" for="password">New password</label>
+						<input class="input" id="password" type="password" name="password" minlength="8" required autocomplete="new-password"/>
+						<p class="mt-1 text-xs text-stone-500">At least 8 characters.</p>
+					</div>
+					<div>
+						<label class="label" for="confirm">Confirm new password</label>
+						<input class="input" id="confirm" type="password" name="confirm" minlength="8" required autocomplete="new-password"/>
+					</div>
+					@ui.FieldError(errMsg)
+					<button class="btn-primary w-full" type="submit">Save password and sign in</button>
+				</form>
+			}
+		</div>
+	}
+}
+
+templ VerifyPage(ok bool) {
+	@ui.Layout("Confirm email") {
+		<div class="mx-auto max-w-md py-10 text-center">
+			if ok {
+				<p class="text-5xl" aria-hidden="true">✓</p>
+				<h1 class="mt-3 text-2xl font-bold">Email confirmed</h1>
+				<p class="mt-2 text-stone-600">Thanks, your email address is confirmed.</p>
+				<a class="btn-primary mt-6" href="/">Continue shopping</a>
+			} else {
+				<h1 class="text-2xl font-bold">That link did not work</h1>
+				<p class="mt-2 text-stone-600">It may have expired or already been used. Sign in and request a new confirmation email from your account page.</p>
+				<a class="btn-primary mt-6" href="/account">Go to my account</a>
+			}
+		</div>
+	}
+}
+
+templ AccountPage(v AccountView) {
 	@ui.Layout("Account") {
 		<h1 class="mb-6 text-2xl font-bold">Your account</h1>
-		<div class="grid gap-8 md:grid-cols-2" x-data={ "{ adding: " + boolJS(errMsg != "") + " }" }>
+		if v.Notice != "" {
+			<p class="mb-6 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800" role="status">{ v.Notice }</p>
+		}
+		if !v.User.EmailVerified {
+			<div class="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+				<p>Please confirm your email address ({ v.User.Email }) so we can reach you about your orders.</p>
+				<form method="post" action="/account/resend-verification"><button class="btn-secondary" type="submit">Resend email</button></form>
+			</div>
+		}
+		if v.User.Guest {
+			<div class="mb-6 rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900">
+				You checked out as a guest. We emailed you a link to set a password so you can sign in later.
+			</div>
+		}
+		<div class="grid gap-8 md:grid-cols-2" x-data={ "{ adding: " + boolJS(v.AddressError != "") + " }" }>
+			<section class="space-y-8">
+				<div>
+					<h2 class="mb-3 text-lg font-semibold">Profile</h2>
+					<form method="post" action="/account/profile" class="card space-y-3 p-6">
+						<div>
+							<label class="label" for="profile-name">Name</label>
+							<input class="input" id="profile-name" name="name" value={ v.User.Name } maxlength="100" required autocomplete="name"/>
+						</div>
+						<div>
+							<label class="label" for="profile-email">Email</label>
+							<input class="input bg-stone-100" id="profile-email" value={ v.User.Email } disabled/>
+						</div>
+						<label class="flex items-start gap-2 text-sm">
+							<input class="mt-1" type="checkbox" name="cart_reminders" value="1" checked?={ v.User.CartReminders }/>
+							<span>Email me if I leave items in my cart<span class="block text-xs text-stone-500">One reminder, a day after you stop shopping. Never marketing.</span></span>
+						</label>
+						@ui.FieldError(v.ProfileMsg)
+						<button class="btn-primary" type="submit">Save profile</button>
+					</form>
+				</div>
+				if !v.User.Guest {
+					<div>
+						<h2 class="mb-3 text-lg font-semibold">Change password</h2>
+						<form method="post" action="/account/password" class="card space-y-3 p-6">
+							<div>
+								<label class="label" for="current_password">Current password</label>
+								<input class="input" id="current_password" type="password" name="current_password" required autocomplete="current-password"/>
+							</div>
+							<div>
+								<label class="label" for="new_password">New password</label>
+								<input class="input" id="new_password" type="password" name="new_password" minlength="8" required autocomplete="new-password"/>
+							</div>
+							<div>
+								<label class="label" for="confirm">Confirm new password</label>
+								<input class="input" id="confirm" type="password" name="confirm" minlength="8" required autocomplete="new-password"/>
+							</div>
+							@ui.FieldError(v.PasswordMsg)
+							<button class="btn-primary" type="submit">Change password</button>
+							<p class="text-xs text-stone-500">You will be signed out on your other devices.</p>
+						</form>
+					</div>
+				}
+				<div>
+					<h2 class="mb-3 text-lg font-semibold">Your data</h2>
+					<div class="card space-y-4 p-6 text-sm">
+						<p class="text-stone-600">Download a copy of everything we hold about you, or permanently delete your account. Order records are kept for accounting but anonymised.</p>
+						<a class="btn-secondary" href="/account/export" download>Download my data</a>
+						<details class="rounded-lg border border-red-200 p-3">
+							<summary class="cursor-pointer font-medium text-red-700">Delete my account</summary>
+							<form method="post" action="/account/delete" class="mt-3 space-y-3">
+								<p class="text-stone-600">This cannot be undone. Enter your password to confirm.</p>
+								<label class="sr-only" for="delete-password">Password</label>
+								<input class="input" id="delete-password" type="password" name="password" required autocomplete="current-password"/>
+								@ui.FieldError(v.DeleteError)
+								<button class="btn-danger" type="submit">Delete account permanently</button>
+							</form>
+						</details>
+					</div>
+				</div>
+			</section>
 			<section>
 				<h2 class="mb-3 text-lg font-semibold">Saved addresses</h2>
-				if len(addrs) == 0 {
+				if len(v.Addresses) == 0 {
 					<p class="text-sm text-stone-500">No saved addresses yet.</p>
 				}
 				<ul class="space-y-3">
-					for _, a := range addrs {
+					for _, a := range v.Addresses {
 						<li class="card flex items-start justify-between gap-4 p-4 text-sm">
 							<div>
 								<p class="font-medium">
@@ -93,29 +235,29 @@ templ AccountPage(addrs []domain.Address, f AddressForm, errMsg string) {
 					}
 				</ul>
 				<button type="button" class="btn-secondary mt-4" x-show="!adding" @click="adding = true">Add address</button>
-			</section>
-			<section x-show="adding" x-cloak>
-				<h2 class="mb-3 text-lg font-semibold">New address</h2>
-				<form method="post" action="/account/addresses" class="card space-y-3 p-6">
-					@field("full_name", "Full name", f.FullName, "name")
-					@field("phone", "Phone", f.Phone, "tel")
-					@field("line1", "Address line 1", f.Line1, "address-line1")
-					@field("line2", "Address line 2 (optional)", f.Line2, "address-line2")
-					<div class="grid grid-cols-2 gap-3">
-						@field("city", "City", f.City, "address-level2")
-						@field("postal_code", "Postal code", f.PostalCode, "postal-code")
-					</div>
-					@field("country", "Country", f.Country, "country-name")
-					<label class="flex items-center gap-2 text-sm">
-						<input type="checkbox" name="is_default" value="1" checked?={ f.IsDefault }/>
-						Make this my default address
-					</label>
-					@ui.FieldError(errMsg)
-					<div class="flex gap-3">
-						<button class="btn-primary" type="submit">Save address</button>
-						<button class="btn-secondary" type="button" @click="adding = false">Cancel</button>
-					</div>
-				</form>
+				<div x-show="adding" x-cloak class="mt-4">
+					<h3 class="mb-3 font-semibold">New address</h3>
+					<form method="post" action="/account/addresses" class="card space-y-3 p-6">
+						@field("full_name", "Full name", v.AddressForm.FullName, "name")
+						@field("phone", "Phone", v.AddressForm.Phone, "tel")
+						@field("line1", "Address line 1", v.AddressForm.Line1, "address-line1")
+						@field("line2", "Address line 2 (optional)", v.AddressForm.Line2, "address-line2")
+						<div class="grid grid-cols-2 gap-3">
+							@field("city", "City", v.AddressForm.City, "address-level2")
+							@field("postal_code", "Postal code", v.AddressForm.PostalCode, "postal-code")
+						</div>
+						@field("country", "Country", v.AddressForm.Country, "country-name")
+						<label class="flex items-center gap-2 text-sm">
+							<input type="checkbox" name="is_default" value="1" checked?={ v.AddressForm.IsDefault }/>
+							Make this my default address
+						</label>
+						@ui.FieldError(v.AddressError)
+						<div class="flex gap-3">
+							<button class="btn-primary" type="submit">Save address</button>
+							<button class="btn-secondary" type="button" @click="adding = false">Cancel</button>
+						</div>
+					</form>
+				</div>
 			</section>
 		</div>
 	}

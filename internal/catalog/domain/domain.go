@@ -24,6 +24,8 @@ type Product struct {
 	CreatedAt   time.Time
 	ArchivedAt  *time.Time
 	OptionName  string // what the variants vary by, e.g. "Size"
+	ThumbURL    string // card-sized cover image ("" when none)
+	Images      []Image
 
 	// MinPriceCents/MaxPriceCents span the active variants (equal to PriceCents when
 	// there is a single price). Filled by List; zero elsewhere.
@@ -32,6 +34,18 @@ type Product struct {
 	// Variants is filled when a single product is loaded.
 	Variants []Variant
 }
+
+// Image is an uploaded product picture. The first image is the cover.
+type Image struct {
+	ID        uuid.UUID
+	ProductID uuid.UUID
+	URL       string
+	ThumbURL  string
+	Alt       string
+	Position  int
+}
+
+const MaxImagesPerProduct = 10
 
 // Variant is one purchasable form of a product (a size, a colour...).
 type Variant struct {
@@ -93,7 +107,10 @@ type Filter struct {
 	Page            int
 	PerPage         int
 	IncludeInactive bool
-	Archived        bool // list archived products instead of live ones
+	Archived        bool   // list archived products instead of live ones
+	Sort            string // "", "newest", "price_asc", "price_desc", "name"; "" ranks by relevance when searching
+	MinPriceCents   int64  // 0 = no lower bound
+	MaxPriceCents   int64  // 0 = no upper bound
 }
 
 type Page struct {
@@ -128,6 +145,8 @@ var (
 	ErrCategoryExists = errors.New("a category with that name already exists")
 	ErrCategoryGone   = errors.New("that category no longer exists")
 
+	ErrImageNotFound   = errors.New("image not found")
+	ErrUploadsDisabled = errors.New("image uploads are not configured on this server")
 	ErrVariantNotFound = errors.New("variant not found")
 	ErrSKUTaken        = errors.New("that SKU is already used by another variant")
 	ErrLabelTaken      = errors.New("this product already has a variant with that name")
@@ -193,4 +212,25 @@ func (in VariantInput) Validate() error {
 		return ValidationError("price cannot be negative")
 	}
 	return nil
+}
+
+// SortOptions are the orderings a shopper can choose on the listing page.
+var SortOptions = []struct{ Value, Label string }{
+	{"", "Best match"}, {"newest", "Newest"}, {"price_asc", "Price: low to high"}, {"price_desc", "Price: high to low"}, {"name", "Name: A to Z"},
+}
+
+// ValidSort reports whether s is a known ordering.
+func ValidSort(s string) bool {
+	for _, o := range SortOptions {
+		if o.Value == s {
+			return true
+		}
+	}
+	return false
+}
+
+// SitemapEntry is a live product's URL slug and when it was added.
+type SitemapEntry struct {
+	Slug      string
+	CreatedAt time.Time
 }

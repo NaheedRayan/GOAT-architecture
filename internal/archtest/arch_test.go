@@ -19,7 +19,7 @@ import (
 const prefix = "github.com/NaheedRayan/goat-architecture/internal/"
 
 var businessModules = map[string]bool{
-	"admin": true, "cart": true, "catalog": true, "identity": true, "inventory": true, "order": true, "payment": true,
+	"admin": true, "cart": true, "catalog": true, "identity": true, "inventory": true, "order": true, "payment": true, "privacy": true, "shipping": true, "promotion": true, "content": true, "seo": true, "alerts": true, "review": true, "wishlist": true,
 }
 
 func TestBoundaries(t *testing.T) {

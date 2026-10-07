@@ -4,6 +4,7 @@ package app
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 
 	"github.com/google/uuid"
@@ -17,6 +18,8 @@ type Repository interface {
 	BySlug(ctx context.Context, slug string) (domain.Product, error)
 	ByID(ctx context.Context, id uuid.UUID) (domain.Product, error)
 	ByIDs(ctx context.Context, ids []uuid.UUID) ([]domain.Product, error)
+	Related(ctx context.Context, productID uuid.UUID, limit int) ([]domain.Product, error)
+	Sitemap(ctx context.Context) ([]domain.SitemapEntry, error)
 	Insert(ctx context.Context, p domain.Product, defaultVariant domain.Variant) error // ErrSlugTaken / ErrSKUTaken
 	Update(ctx context.Context, p domain.Product) error                                // domain.ErrNotFound / ErrSlugTaken
 	Categories(ctx context.Context) ([]domain.Category, error)
@@ -25,6 +28,11 @@ type Repository interface {
 	InsertCategory(ctx context.Context, c domain.Category) error
 	RenameCategory(ctx context.Context, id uuid.UUID, name string) error
 	DeleteCategory(ctx context.Context, id uuid.UUID) error
+	ImagesByProducts(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID][]domain.Image, error)
+	GetImage(ctx context.Context, productID, imageID uuid.UUID) (domain.Image, error)
+	AddImage(ctx context.Context, img domain.Image) error
+	RemoveImage(ctx context.Context, img domain.Image) (remainingRefs int, err error)
+	ReorderImages(ctx context.Context, productID uuid.UUID, ids []uuid.UUID) error
 	VariantsByProducts(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID][]domain.Variant, error)
 	VariantInfos(ctx context.Context, ids []uuid.UUID) ([]domain.VariantInfo, error)
 	GetVariant(ctx context.Context, id uuid.UUID) (domain.Variant, error)
@@ -35,13 +43,21 @@ type Repository interface {
 	Restore(ctx context.Context, id uuid.UUID) error
 }
 
+// ImageStore validates, processes and stores uploaded pictures. It returns
+// domain.ValidationError for files a user can fix.
+type ImageStore interface {
+	Save(ctx context.Context, r io.Reader) (fullURL, thumbURL string, err error)
+	Delete(ctx context.Context, urls ...string) error
+}
+
 type Service struct {
 	repo     Repository
 	currency string
+	images   ImageStore // nil: uploads disabled
 }
 
-func NewService(repo Repository, currency string) *Service {
-	return &Service{repo: repo, currency: currency}
+func NewService(repo Repository, currency string, images ImageStore) *Service {
+	return &Service{repo: repo, currency: currency, images: images}
 }
 
 const (
@@ -56,6 +72,10 @@ func (s *Service) List(ctx context.Context, f domain.Filter) (domain.Page, error
 	if f.Page > 10000 { // keeps OFFSET far from int32 overflow
 		f.Page = 10000
 	}
+	if !domain.ValidSort(f.Sort) {
+		f.Sort = ""
+	}
+	f.MinPriceCents, f.MaxPriceCents = max(f.MinPriceCents, 0), max(f.MaxPriceCents, 0)
 	if f.PerPage < 1 || f.PerPage > maxPerPage {
 		f.PerPage = defaultPerPage
 	}
@@ -88,8 +108,91 @@ func (s *Service) ByID(ctx context.Context, pid uuid.UUID) (domain.Product, erro
 
 func (s *Service) withVariants(ctx context.Context, p domain.Product) (domain.Product, error) {
 	vs, err := s.repo.VariantsByProducts(ctx, []uuid.UUID{p.ID})
+	if err != nil {
+		return p, err
+	}
 	p.Variants = vs[p.ID]
+	imgs, err := s.repo.ImagesByProducts(ctx, []uuid.UUID{p.ID})
+	p.Images = imgs[p.ID]
 	return p, err
+}
+
+// AddImage uploads a picture for a product. The first image becomes its cover.
+func (s *Service) AddImage(ctx context.Context, productID uuid.UUID, r io.Reader, alt string) (domain.Image, error) {
+	if s.images == nil {
+		return domain.Image{}, domain.ErrUploadsDisabled
+	}
+	alt = strings.TrimSpace(alt)
+	if len([]rune(alt)) > 200 {
+		return domain.Image{}, domain.ValidationError("alt text is too long (200 characters max)")
+	}
+	p, err := s.repo.ByID(ctx, productID)
+	if err != nil {
+		return domain.Image{}, err
+	}
+	if p.Archived() {
+		return domain.Image{}, domain.ErrNotFound
+	}
+	existing, err := s.repo.ImagesByProducts(ctx, []uuid.UUID{productID})
+	if err != nil {
+		return domain.Image{}, err
+	}
+	if len(existing[productID]) >= domain.MaxImagesPerProduct {
+		return domain.Image{}, domain.ValidationError("a product can have at most 10 images")
+	}
+	full, thumb, err := s.images.Save(ctx, r)
+	if err != nil {
+		return domain.Image{}, err
+	}
+	img := domain.Image{ID: id.New(), ProductID: productID, URL: full, ThumbURL: thumb, Alt: alt, Position: len(existing[productID])}
+	if err := s.repo.AddImage(ctx, img); err != nil {
+		return domain.Image{}, err
+	}
+	return img, nil
+}
+
+// RemoveImage deletes a picture, and its files when no other product uses them.
+func (s *Service) RemoveImage(ctx context.Context, productID, imageID uuid.UUID) error {
+	img, err := s.repo.GetImage(ctx, productID, imageID)
+	if err != nil {
+		return err
+	}
+	refs, err := s.repo.RemoveImage(ctx, img)
+	if err != nil {
+		return err
+	}
+	if refs == 0 && s.images != nil {
+		_ = s.images.Delete(ctx, img.URL, img.ThumbURL) // best effort: an orphan file is harmless
+	}
+	return nil
+}
+
+// MoveImage shifts a picture earlier (delta < 0) or later (delta > 0) in the gallery.
+func (s *Service) MoveImage(ctx context.Context, productID, imageID uuid.UUID, delta int) error {
+	all, err := s.repo.ImagesByProducts(ctx, []uuid.UUID{productID})
+	if err != nil {
+		return err
+	}
+	imgs := all[productID]
+	at := -1
+	for i, im := range imgs {
+		if im.ID == imageID {
+			at = i
+		}
+	}
+	if at < 0 {
+		return domain.ErrImageNotFound
+	}
+	to := at + delta
+	if to < 0 || to >= len(imgs) {
+		return nil // already at the edge
+	}
+	imgs[at], imgs[to] = imgs[to], imgs[at]
+	ids := make([]uuid.UUID, len(imgs))
+	for i, im := range imgs {
+		ids[i] = im.ID
+	}
+	return s.repo.ReorderImages(ctx, productID, ids)
 }
 
 // VariantsByProducts returns each product's variants in display order.
@@ -292,4 +395,14 @@ func (s *Service) ArchiveProduct(ctx context.Context, pid uuid.UUID) error {
 // RestoreProduct un-archives a product; it comes back hidden until published.
 func (s *Service) RestoreProduct(ctx context.Context, pid uuid.UUID) error {
 	return s.repo.Restore(ctx, pid)
+}
+
+// Related returns other live products from the same category.
+func (s *Service) Related(ctx context.Context, productID uuid.UUID, limit int) ([]domain.Product, error) {
+	return s.repo.Related(ctx, productID, min(max(limit, 1), 12))
+}
+
+// Sitemap lists every live product for the sitemap.
+func (s *Service) Sitemap(ctx context.Context) ([]domain.SitemapEntry, error) {
+	return s.repo.Sitemap(ctx)
 }

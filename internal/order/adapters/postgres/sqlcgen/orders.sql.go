@@ -7,9 +7,28 @@ package sqlcgen
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const anonymizeUserOrders = `-- name: AnonymizeUserOrders :execrows
+UPDATE orders.orders
+SET shipping = jsonb_build_object('full_name', 'Deleted customer', 'phone', '', 'line1', '', 'line2', '',
+                                  'city', '', 'postal_code', '', 'country', COALESCE(shipping->>'country', '')),
+    contact_email = '', admin_note = '', return_reason = ''
+WHERE user_id = $1
+`
+
+// Account deletion: keep the financial record, drop everything that identifies the person.
+func (q *Queries) AnonymizeUserOrders(ctx context.Context, userID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, anonymizeUserOrders, userID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
 
 const claimPaidOrders = `-- name: ClaimPaidOrders :many
 SELECT id FROM orders.orders WHERE status = 'paid' ORDER BY created_at LIMIT $1 FOR UPDATE SKIP LOCKED
@@ -65,8 +84,93 @@ func (q *Queries) CountOrdersByStatus(ctx context.Context) ([]CountOrdersByStatu
 	return items, nil
 }
 
+const countReturnRequests = `-- name: CountReturnRequests :one
+SELECT count(*)::bigint FROM orders.orders WHERE return_status = 'requested'
+`
+
+func (q *Queries) CountReturnRequests(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countReturnRequests)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const exportOrders = `-- name: ExportOrders :many
+SELECT id, user_id, status, total_cents, currency, idempotency_key, shipping, payment_id, created_at, updated_at, subtotal_cents, discount_cents, shipping_cents, tax_cents, tax_inclusive, shipping_method, coupon_code, payment_method, contact_email, tracking_carrier, tracking_number, tracking_url, shipped_at, delivered_at, cancelled_at, refunded_at, refund_cents, admin_note, return_status, return_reason, return_note, return_requested_at FROM orders.orders
+WHERE ($1::text = '' OR status = $1::text)
+  AND ($2::timestamptz IS NULL OR created_at >= $2::timestamptz)
+  AND ($3::timestamptz IS NULL OR created_at < $3::timestamptz)
+ORDER BY created_at DESC, id DESC
+LIMIT $4
+`
+
+type ExportOrdersParams struct {
+	Status      string
+	CreatedFrom *time.Time
+	CreatedTo   *time.Time
+	MaxRows     int32
+}
+
+func (q *Queries) ExportOrders(ctx context.Context, arg ExportOrdersParams) ([]OrdersOrder, error) {
+	rows, err := q.db.Query(ctx, exportOrders,
+		arg.Status,
+		arg.CreatedFrom,
+		arg.CreatedTo,
+		arg.MaxRows,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []OrdersOrder
+	for rows.Next() {
+		var i OrdersOrder
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Status,
+			&i.TotalCents,
+			&i.Currency,
+			&i.IdempotencyKey,
+			&i.Shipping,
+			&i.PaymentID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.SubtotalCents,
+			&i.DiscountCents,
+			&i.ShippingCents,
+			&i.TaxCents,
+			&i.TaxInclusive,
+			&i.ShippingMethod,
+			&i.CouponCode,
+			&i.PaymentMethod,
+			&i.ContactEmail,
+			&i.TrackingCarrier,
+			&i.TrackingNumber,
+			&i.TrackingUrl,
+			&i.ShippedAt,
+			&i.DeliveredAt,
+			&i.CancelledAt,
+			&i.RefundedAt,
+			&i.RefundCents,
+			&i.AdminNote,
+			&i.ReturnStatus,
+			&i.ReturnReason,
+			&i.ReturnNote,
+			&i.ReturnRequestedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getOrder = `-- name: GetOrder :one
-SELECT id, user_id, status, total_cents, currency, idempotency_key, shipping, payment_id, created_at, updated_at FROM orders.orders WHERE id = $1
+SELECT id, user_id, status, total_cents, currency, idempotency_key, shipping, payment_id, created_at, updated_at, subtotal_cents, discount_cents, shipping_cents, tax_cents, tax_inclusive, shipping_method, coupon_code, payment_method, contact_email, tracking_carrier, tracking_number, tracking_url, shipped_at, delivered_at, cancelled_at, refunded_at, refund_cents, admin_note, return_status, return_reason, return_note, return_requested_at FROM orders.orders WHERE id = $1
 `
 
 func (q *Queries) GetOrder(ctx context.Context, id uuid.UUID) (OrdersOrder, error) {
@@ -83,12 +187,34 @@ func (q *Queries) GetOrder(ctx context.Context, id uuid.UUID) (OrdersOrder, erro
 		&i.PaymentID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SubtotalCents,
+		&i.DiscountCents,
+		&i.ShippingCents,
+		&i.TaxCents,
+		&i.TaxInclusive,
+		&i.ShippingMethod,
+		&i.CouponCode,
+		&i.PaymentMethod,
+		&i.ContactEmail,
+		&i.TrackingCarrier,
+		&i.TrackingNumber,
+		&i.TrackingUrl,
+		&i.ShippedAt,
+		&i.DeliveredAt,
+		&i.CancelledAt,
+		&i.RefundedAt,
+		&i.RefundCents,
+		&i.AdminNote,
+		&i.ReturnStatus,
+		&i.ReturnReason,
+		&i.ReturnNote,
+		&i.ReturnRequestedAt,
 	)
 	return i, err
 }
 
 const getOrderByIdempotencyKey = `-- name: GetOrderByIdempotencyKey :one
-SELECT id, user_id, status, total_cents, currency, idempotency_key, shipping, payment_id, created_at, updated_at FROM orders.orders WHERE user_id = $1 AND idempotency_key = $2
+SELECT id, user_id, status, total_cents, currency, idempotency_key, shipping, payment_id, created_at, updated_at, subtotal_cents, discount_cents, shipping_cents, tax_cents, tax_inclusive, shipping_method, coupon_code, payment_method, contact_email, tracking_carrier, tracking_number, tracking_url, shipped_at, delivered_at, cancelled_at, refunded_at, refund_cents, admin_note, return_status, return_reason, return_note, return_requested_at FROM orders.orders WHERE user_id = $1 AND idempotency_key = $2
 `
 
 type GetOrderByIdempotencyKeyParams struct {
@@ -110,12 +236,34 @@ func (q *Queries) GetOrderByIdempotencyKey(ctx context.Context, arg GetOrderById
 		&i.PaymentID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SubtotalCents,
+		&i.DiscountCents,
+		&i.ShippingCents,
+		&i.TaxCents,
+		&i.TaxInclusive,
+		&i.ShippingMethod,
+		&i.CouponCode,
+		&i.PaymentMethod,
+		&i.ContactEmail,
+		&i.TrackingCarrier,
+		&i.TrackingNumber,
+		&i.TrackingUrl,
+		&i.ShippedAt,
+		&i.DeliveredAt,
+		&i.CancelledAt,
+		&i.RefundedAt,
+		&i.RefundCents,
+		&i.AdminNote,
+		&i.ReturnStatus,
+		&i.ReturnReason,
+		&i.ReturnNote,
+		&i.ReturnRequestedAt,
 	)
 	return i, err
 }
 
 const getOrderForUpdate = `-- name: GetOrderForUpdate :one
-SELECT id, user_id, status, total_cents, currency, idempotency_key, shipping, payment_id, created_at, updated_at FROM orders.orders WHERE id = $1 FOR UPDATE
+SELECT id, user_id, status, total_cents, currency, idempotency_key, shipping, payment_id, created_at, updated_at, subtotal_cents, discount_cents, shipping_cents, tax_cents, tax_inclusive, shipping_method, coupon_code, payment_method, contact_email, tracking_carrier, tracking_number, tracking_url, shipped_at, delivered_at, cancelled_at, refunded_at, refund_cents, admin_note, return_status, return_reason, return_note, return_requested_at FROM orders.orders WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetOrderForUpdate(ctx context.Context, id uuid.UUID) (OrdersOrder, error) {
@@ -132,13 +280,58 @@ func (q *Queries) GetOrderForUpdate(ctx context.Context, id uuid.UUID) (OrdersOr
 		&i.PaymentID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SubtotalCents,
+		&i.DiscountCents,
+		&i.ShippingCents,
+		&i.TaxCents,
+		&i.TaxInclusive,
+		&i.ShippingMethod,
+		&i.CouponCode,
+		&i.PaymentMethod,
+		&i.ContactEmail,
+		&i.TrackingCarrier,
+		&i.TrackingNumber,
+		&i.TrackingUrl,
+		&i.ShippedAt,
+		&i.DeliveredAt,
+		&i.CancelledAt,
+		&i.RefundedAt,
+		&i.RefundCents,
+		&i.AdminNote,
+		&i.ReturnStatus,
+		&i.ReturnReason,
+		&i.ReturnNote,
+		&i.ReturnRequestedAt,
 	)
 	return i, err
 }
 
+const hasPurchased = `-- name: HasPurchased :one
+SELECT EXISTS (
+    SELECT 1 FROM orders.order_items i JOIN orders.orders o ON o.id = i.order_id
+    WHERE o.user_id = $1 AND i.product_id = $2 AND o.status IN ('shipped', 'delivered')
+) AS purchased
+`
+
+type HasPurchasedParams struct {
+	UserID    uuid.UUID
+	ProductID uuid.UUID
+}
+
+// Has this user received (or been sent) this product? Only then may they review it.
+func (q *Queries) HasPurchased(ctx context.Context, arg HasPurchasedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasPurchased, arg.UserID, arg.ProductID)
+	var purchased bool
+	err := row.Scan(&purchased)
+	return purchased, err
+}
+
 const insertOrder = `-- name: InsertOrder :exec
-INSERT INTO orders.orders (id, user_id, status, total_cents, currency, idempotency_key, shipping)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO orders.orders (
+    id, user_id, status, total_cents, currency, idempotency_key, shipping,
+    subtotal_cents, discount_cents, shipping_cents, tax_cents, tax_inclusive,
+    shipping_method, coupon_code, payment_method, contact_email
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 `
 
 type InsertOrderParams struct {
@@ -149,6 +342,15 @@ type InsertOrderParams struct {
 	Currency       string
 	IdempotencyKey string
 	Shipping       []byte
+	SubtotalCents  int64
+	DiscountCents  int64
+	ShippingCents  int64
+	TaxCents       int64
+	TaxInclusive   bool
+	ShippingMethod string
+	CouponCode     string
+	PaymentMethod  string
+	ContactEmail   string
 }
 
 func (q *Queries) InsertOrder(ctx context.Context, arg InsertOrderParams) error {
@@ -160,19 +362,54 @@ func (q *Queries) InsertOrder(ctx context.Context, arg InsertOrderParams) error 
 		arg.Currency,
 		arg.IdempotencyKey,
 		arg.Shipping,
+		arg.SubtotalCents,
+		arg.DiscountCents,
+		arg.ShippingCents,
+		arg.TaxCents,
+		arg.TaxInclusive,
+		arg.ShippingMethod,
+		arg.CouponCode,
+		arg.PaymentMethod,
+		arg.ContactEmail,
+	)
+	return err
+}
+
+const insertOrderEvent = `-- name: InsertOrderEvent :exec
+INSERT INTO orders.order_events (id, order_id, kind, detail, actor_id) VALUES ($1, $2, $3, $4, $5)
+`
+
+type InsertOrderEventParams struct {
+	ID      uuid.UUID
+	OrderID uuid.UUID
+	Kind    string
+	Detail  string
+	ActorID *uuid.UUID
+}
+
+func (q *Queries) InsertOrderEvent(ctx context.Context, arg InsertOrderEventParams) error {
+	_, err := q.db.Exec(ctx, insertOrderEvent,
+		arg.ID,
+		arg.OrderID,
+		arg.Kind,
+		arg.Detail,
+		arg.ActorID,
 	)
 	return err
 }
 
 const insertOrderItem = `-- name: InsertOrderItem :exec
-INSERT INTO orders.order_items (order_id, product_id, name, unit_price_cents, quantity)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO orders.order_items (order_id, variant_id, product_id, name, variant_label, sku, unit_price_cents, quantity)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 `
 
 type InsertOrderItemParams struct {
 	OrderID        uuid.UUID
+	VariantID      uuid.UUID
 	ProductID      uuid.UUID
 	Name           string
+	VariantLabel   string
+	Sku            string
 	UnitPriceCents int64
 	Quantity       int32
 }
@@ -180,16 +417,50 @@ type InsertOrderItemParams struct {
 func (q *Queries) InsertOrderItem(ctx context.Context, arg InsertOrderItemParams) error {
 	_, err := q.db.Exec(ctx, insertOrderItem,
 		arg.OrderID,
+		arg.VariantID,
 		arg.ProductID,
 		arg.Name,
+		arg.VariantLabel,
+		arg.Sku,
 		arg.UnitPriceCents,
 		arg.Quantity,
 	)
 	return err
 }
 
+const listOrderEvents = `-- name: ListOrderEvents :many
+SELECT id, order_id, at, kind, detail, actor_id FROM orders.order_events WHERE order_id = $1 ORDER BY at, id
+`
+
+func (q *Queries) ListOrderEvents(ctx context.Context, orderID uuid.UUID) ([]OrdersOrderEvent, error) {
+	rows, err := q.db.Query(ctx, listOrderEvents, orderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []OrdersOrderEvent
+	for rows.Next() {
+		var i OrdersOrderEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrderID,
+			&i.At,
+			&i.Kind,
+			&i.Detail,
+			&i.ActorID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOrderItems = `-- name: ListOrderItems :many
-SELECT order_id, product_id, name, unit_price_cents, quantity, variant_id, variant_label, sku FROM orders.order_items WHERE order_id = $1 ORDER BY name
+SELECT order_id, product_id, name, unit_price_cents, quantity, variant_id, variant_label, sku FROM orders.order_items WHERE order_id = $1 ORDER BY name, variant_label
 `
 
 func (q *Queries) ListOrderItems(ctx context.Context, orderID uuid.UUID) ([]OrdersOrderItem, error) {
@@ -221,52 +492,8 @@ func (q *Queries) ListOrderItems(ctx context.Context, orderID uuid.UUID) ([]Orde
 	return items, nil
 }
 
-const listOrders = `-- name: ListOrders :many
-SELECT id, user_id, status, total_cents, currency, idempotency_key, shipping, payment_id, created_at, updated_at FROM orders.orders
-WHERE ($1::text = '' OR status = $1::text)
-ORDER BY created_at DESC, id DESC
-LIMIT $3 OFFSET $2
-`
-
-type ListOrdersParams struct {
-	Status     string
-	PageOffset int32
-	PageLimit  int32
-}
-
-func (q *Queries) ListOrders(ctx context.Context, arg ListOrdersParams) ([]OrdersOrder, error) {
-	rows, err := q.db.Query(ctx, listOrders, arg.Status, arg.PageOffset, arg.PageLimit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []OrdersOrder
-	for rows.Next() {
-		var i OrdersOrder
-		if err := rows.Scan(
-			&i.ID,
-			&i.UserID,
-			&i.Status,
-			&i.TotalCents,
-			&i.Currency,
-			&i.IdempotencyKey,
-			&i.Shipping,
-			&i.PaymentID,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listOrdersByUser = `-- name: ListOrdersByUser :many
-SELECT id, user_id, status, total_cents, currency, idempotency_key, shipping, payment_id, created_at, updated_at FROM orders.orders WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2
+SELECT id, user_id, status, total_cents, currency, idempotency_key, shipping, payment_id, created_at, updated_at, subtotal_cents, discount_cents, shipping_cents, tax_cents, tax_inclusive, shipping_method, coupon_code, payment_method, contact_email, tracking_carrier, tracking_number, tracking_url, shipped_at, delivered_at, cancelled_at, refunded_at, refund_cents, admin_note, return_status, return_reason, return_note, return_requested_at FROM orders.orders WHERE user_id = $1 ORDER BY created_at DESC, id DESC LIMIT $2
 `
 
 type ListOrdersByUserParams struct {
@@ -294,6 +521,28 @@ func (q *Queries) ListOrdersByUser(ctx context.Context, arg ListOrdersByUserPara
 			&i.PaymentID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.SubtotalCents,
+			&i.DiscountCents,
+			&i.ShippingCents,
+			&i.TaxCents,
+			&i.TaxInclusive,
+			&i.ShippingMethod,
+			&i.CouponCode,
+			&i.PaymentMethod,
+			&i.ContactEmail,
+			&i.TrackingCarrier,
+			&i.TrackingNumber,
+			&i.TrackingUrl,
+			&i.ShippedAt,
+			&i.DeliveredAt,
+			&i.CancelledAt,
+			&i.RefundedAt,
+			&i.RefundCents,
+			&i.AdminNote,
+			&i.ReturnStatus,
+			&i.ReturnReason,
+			&i.ReturnNote,
+			&i.ReturnRequestedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -305,33 +554,282 @@ func (q *Queries) ListOrdersByUser(ctx context.Context, arg ListOrdersByUserPara
 	return items, nil
 }
 
-const setOrderPayment = `-- name: SetOrderPayment :exec
-UPDATE orders.orders SET payment_id = $2, updated_at = now() WHERE id = $1
+const refundTotals = `-- name: RefundTotals :one
+SELECT count(*)::bigint AS orders, COALESCE(sum(refund_cents), 0)::bigint AS refunded_cents
+FROM orders.orders
+WHERE refund_cents > 0 AND COALESCE(refunded_at, cancelled_at) >= $1 AND COALESCE(refunded_at, cancelled_at) < $2
 `
 
-type SetOrderPaymentParams struct {
-	ID        uuid.UUID
-	PaymentID *uuid.UUID
+type RefundTotalsParams struct {
+	FromAt *time.Time
+	ToAt   *time.Time
 }
 
-func (q *Queries) SetOrderPayment(ctx context.Context, arg SetOrderPaymentParams) error {
-	_, err := q.db.Exec(ctx, setOrderPayment, arg.ID, arg.PaymentID)
-	return err
+type RefundTotalsRow struct {
+	Orders        int64
+	RefundedCents int64
 }
 
-const setOrderStatus = `-- name: SetOrderStatus :execrows
-UPDATE orders.orders SET status = $2, updated_at = now() WHERE id = $1
+func (q *Queries) RefundTotals(ctx context.Context, arg RefundTotalsParams) (RefundTotalsRow, error) {
+	row := q.db.QueryRow(ctx, refundTotals, arg.FromAt, arg.ToAt)
+	var i RefundTotalsRow
+	err := row.Scan(&i.Orders, &i.RefundedCents)
+	return i, err
+}
+
+const salesByDay = `-- name: SalesByDay :many
+SELECT (created_at AT TIME ZONE 'UTC')::date AS day, count(*)::bigint AS orders, COALESCE(sum(total_cents), 0)::bigint AS revenue_cents
+FROM orders.orders
+WHERE created_at >= $1 AND created_at < $2
+  AND status IN ('paid', 'fulfilling', 'shipped', 'delivered')
+GROUP BY 1 ORDER BY 1
 `
 
-type SetOrderStatusParams struct {
-	ID     uuid.UUID
-	Status string
+type SalesByDayParams struct {
+	FromAt time.Time
+	ToAt   time.Time
 }
 
-func (q *Queries) SetOrderStatus(ctx context.Context, arg SetOrderStatusParams) (int64, error) {
-	result, err := q.db.Exec(ctx, setOrderStatus, arg.ID, arg.Status)
+type SalesByDayRow struct {
+	Day          pgtype.Date
+	Orders       int64
+	RevenueCents int64
+}
+
+func (q *Queries) SalesByDay(ctx context.Context, arg SalesByDayParams) ([]SalesByDayRow, error) {
+	rows, err := q.db.Query(ctx, salesByDay, arg.FromAt, arg.ToAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SalesByDayRow
+	for rows.Next() {
+		var i SalesByDayRow
+		if err := rows.Scan(&i.Day, &i.Orders, &i.RevenueCents); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const salesTotals = `-- name: SalesTotals :one
+SELECT count(*)::bigint AS orders, COALESCE(sum(total_cents), 0)::bigint AS revenue_cents
+FROM orders.orders
+WHERE created_at >= $1 AND created_at < $2
+  AND status IN ('paid', 'fulfilling', 'shipped', 'delivered')
+`
+
+type SalesTotalsParams struct {
+	FromAt time.Time
+	ToAt   time.Time
+}
+
+type SalesTotalsRow struct {
+	Orders       int64
+	RevenueCents int64
+}
+
+// Orders that count as sales: confirmed and beyond, not cancelled or refunded.
+func (q *Queries) SalesTotals(ctx context.Context, arg SalesTotalsParams) (SalesTotalsRow, error) {
+	row := q.db.QueryRow(ctx, salesTotals, arg.FromAt, arg.ToAt)
+	var i SalesTotalsRow
+	err := row.Scan(&i.Orders, &i.RevenueCents)
+	return i, err
+}
+
+const saveOrder = `-- name: SaveOrder :execrows
+UPDATE orders.orders SET
+    status = $2, payment_id = $3,
+    tracking_carrier = $4, tracking_number = $5, tracking_url = $6,
+    shipped_at = $7, delivered_at = $8, cancelled_at = $9, refunded_at = $10, refund_cents = $11,
+    admin_note = $12, return_status = $13, return_reason = $14, return_note = $15, return_requested_at = $16,
+    updated_at = now()
+WHERE id = $1
+`
+
+type SaveOrderParams struct {
+	ID                uuid.UUID
+	Status            string
+	PaymentID         *uuid.UUID
+	TrackingCarrier   string
+	TrackingNumber    string
+	TrackingUrl       string
+	ShippedAt         *time.Time
+	DeliveredAt       *time.Time
+	CancelledAt       *time.Time
+	RefundedAt        *time.Time
+	RefundCents       int64
+	AdminNote         string
+	ReturnStatus      string
+	ReturnReason      string
+	ReturnNote        string
+	ReturnRequestedAt *time.Time
+}
+
+// Persists every field that changes after creation. Callers hold the row lock (GetOrderForUpdate).
+func (q *Queries) SaveOrder(ctx context.Context, arg SaveOrderParams) (int64, error) {
+	result, err := q.db.Exec(ctx, saveOrder,
+		arg.ID,
+		arg.Status,
+		arg.PaymentID,
+		arg.TrackingCarrier,
+		arg.TrackingNumber,
+		arg.TrackingUrl,
+		arg.ShippedAt,
+		arg.DeliveredAt,
+		arg.CancelledAt,
+		arg.RefundedAt,
+		arg.RefundCents,
+		arg.AdminNote,
+		arg.ReturnStatus,
+		arg.ReturnReason,
+		arg.ReturnNote,
+		arg.ReturnRequestedAt,
+	)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const searchOrders = `-- name: SearchOrders :many
+SELECT id, user_id, status, total_cents, currency, idempotency_key, shipping, payment_id, created_at, updated_at, subtotal_cents, discount_cents, shipping_cents, tax_cents, tax_inclusive, shipping_method, coupon_code, payment_method, contact_email, tracking_carrier, tracking_number, tracking_url, shipped_at, delivered_at, cancelled_at, refunded_at, refund_cents, admin_note, return_status, return_reason, return_note, return_requested_at FROM orders.orders
+WHERE ($1::text = '' OR status = $1::text)
+  AND ($2::text = '' OR return_status = $2::text)
+  AND ($3::text = ''
+       OR id::text ILIKE $4::text
+       OR contact_email ILIKE $4::text
+       OR shipping->>'full_name' ILIKE $4::text
+       OR shipping->>'phone' ILIKE $4::text
+       OR tracking_number ILIKE $4::text)
+  AND ($5::timestamptz IS NULL OR created_at >= $5::timestamptz)
+  AND ($6::timestamptz IS NULL OR created_at < $6::timestamptz)
+ORDER BY created_at DESC, id DESC
+LIMIT $8 OFFSET $7
+`
+
+type SearchOrdersParams struct {
+	Status       string
+	ReturnStatus string
+	Query        string
+	LikePattern  string
+	CreatedFrom  *time.Time
+	CreatedTo    *time.Time
+	PageOffset   int32
+	PageLimit    int32
+}
+
+func (q *Queries) SearchOrders(ctx context.Context, arg SearchOrdersParams) ([]OrdersOrder, error) {
+	rows, err := q.db.Query(ctx, searchOrders,
+		arg.Status,
+		arg.ReturnStatus,
+		arg.Query,
+		arg.LikePattern,
+		arg.CreatedFrom,
+		arg.CreatedTo,
+		arg.PageOffset,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []OrdersOrder
+	for rows.Next() {
+		var i OrdersOrder
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Status,
+			&i.TotalCents,
+			&i.Currency,
+			&i.IdempotencyKey,
+			&i.Shipping,
+			&i.PaymentID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.SubtotalCents,
+			&i.DiscountCents,
+			&i.ShippingCents,
+			&i.TaxCents,
+			&i.TaxInclusive,
+			&i.ShippingMethod,
+			&i.CouponCode,
+			&i.PaymentMethod,
+			&i.ContactEmail,
+			&i.TrackingCarrier,
+			&i.TrackingNumber,
+			&i.TrackingUrl,
+			&i.ShippedAt,
+			&i.DeliveredAt,
+			&i.CancelledAt,
+			&i.RefundedAt,
+			&i.RefundCents,
+			&i.AdminNote,
+			&i.ReturnStatus,
+			&i.ReturnReason,
+			&i.ReturnNote,
+			&i.ReturnRequestedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const topProducts = `-- name: TopProducts :many
+SELECT i.product_id, max(i.name)::text AS name, sum(i.quantity)::bigint AS units, sum(i.unit_price_cents * i.quantity)::bigint AS revenue_cents
+FROM orders.order_items i
+JOIN orders.orders o ON o.id = i.order_id
+WHERE o.created_at >= $1 AND o.created_at < $2
+  AND o.status IN ('paid', 'fulfilling', 'shipped', 'delivered')
+GROUP BY i.product_id
+ORDER BY revenue_cents DESC, units DESC
+LIMIT $3
+`
+
+type TopProductsParams struct {
+	FromAt   time.Time
+	ToAt     time.Time
+	TopLimit int32
+}
+
+type TopProductsRow struct {
+	ProductID    uuid.UUID
+	Name         string
+	Units        int64
+	RevenueCents int64
+}
+
+func (q *Queries) TopProducts(ctx context.Context, arg TopProductsParams) ([]TopProductsRow, error) {
+	rows, err := q.db.Query(ctx, topProducts, arg.FromAt, arg.ToAt, arg.TopLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []TopProductsRow
+	for rows.Next() {
+		var i TopProductsRow
+		if err := rows.Scan(
+			&i.ProductID,
+			&i.Name,
+			&i.Units,
+			&i.RevenueCents,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

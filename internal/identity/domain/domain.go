@@ -11,13 +11,20 @@ import (
 )
 
 type User struct {
-	ID           uuid.UUID
-	Email        string
-	Name         string
-	Role         string
-	PasswordHash string
-	CreatedAt    time.Time
+	ID            uuid.UUID
+	Email         string
+	Name          string
+	Role          string
+	PasswordHash  string
+	CreatedAt     time.Time
+	EmailVerified bool
+	Guest         bool // created at checkout; no password until the owner claims the account
+	Disabled      bool
+	CartReminders bool // wants an email when a cart is left behind
 }
+
+// IsStaff reports whether the user may enter the back office.
+func (u User) IsStaff() bool { return u.Role == "admin" || u.Role == "staff" }
 
 type Address struct {
 	ID         uuid.UUID
@@ -38,6 +45,9 @@ type RefreshToken struct {
 	ExpiresAt time.Time
 	RevokedAt *time.Time
 	RotatedAt *time.Time // set when the token was exchanged for a new one (not when revoked)
+	// Expired and RotatedAge are measured by the database clock (see GetRefreshTokenByHash).
+	Expired    bool
+	RotatedAge *time.Duration
 }
 
 var (
@@ -45,6 +55,12 @@ var (
 	ErrInvalidCredentials = errors.New("invalid email or password")
 	ErrInvalidToken       = errors.New("invalid or expired session")
 	ErrNotFound           = errors.New("not found")
+	ErrAccountExists      = errors.New("an account with this email already exists; please sign in")
+	ErrGuestAccount       = errors.New("you checked out as a guest with this email before; use \"Forgot password\" to set a password and claim your account")
+	ErrAccountDisabled    = errors.New("this account has been disabled; please contact support")
+	ErrWrongPassword      = errors.New("the current password is not correct")
+	ErrLastAdmin          = errors.New("there must be at least one active administrator")
+	ErrSelfChange         = errors.New("you cannot change your own role or disable your own account")
 )
 
 // ValidationError is a user-correctable input problem.
@@ -99,6 +115,36 @@ func checkLengths(fullName, phone, line1, line2, city, postal, country string) e
 		if len([]rune(f.v)) > f.max {
 			return ValidationError(f.n + " is too long")
 		}
+	}
+	return nil
+}
+
+const (
+	RoleCustomer = "customer"
+	RoleStaff    = "staff"
+	RoleAdmin    = "admin"
+)
+
+func ValidRole(r string) bool { return r == RoleCustomer || r == RoleStaff || r == RoleAdmin }
+
+// ValidatePassword applies the password policy for new passwords.
+func ValidatePassword(p string) error {
+	switch {
+	case len(p) < MinPasswordLen:
+		return ValidationError("password must be at least 8 characters")
+	case len(p) > 128:
+		return ValidationError("password is too long")
+	}
+	return nil
+}
+
+// ValidateEmail checks an address for checkout/registration.
+func ValidateEmail(email string) error {
+	if len(email) > 254 {
+		return ValidationError("email address is too long")
+	}
+	if _, err := mail.ParseAddress(email); err != nil || strings.ContainsAny(email, " <>\r\n") {
+		return ValidationError("enter a valid email address")
 	}
 	return nil
 }

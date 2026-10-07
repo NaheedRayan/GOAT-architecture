@@ -21,6 +21,32 @@ func (q *Queries) ClearDefaultAddress(ctx context.Context, userID uuid.UUID) err
 	return err
 }
 
+const consumeActionToken = `-- name: ConsumeActionToken :one
+UPDATE identity.action_tokens SET used_at = now()
+WHERE token_hash = $1 AND kind = $2 AND used_at IS NULL AND expires_at > now()
+RETURNING id, user_id, kind, token_hash, expires_at, used_at, created_at
+`
+
+type ConsumeActionTokenParams struct {
+	TokenHash []byte
+	Kind      string
+}
+
+func (q *Queries) ConsumeActionToken(ctx context.Context, arg ConsumeActionTokenParams) (IdentityActionToken, error) {
+	row := q.db.QueryRow(ctx, consumeActionToken, arg.TokenHash, arg.Kind)
+	var i IdentityActionToken
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Kind,
+		&i.TokenHash,
+		&i.ExpiresAt,
+		&i.UsedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const consumeRefreshToken = `-- name: ConsumeRefreshToken :one
 UPDATE identity.refresh_tokens SET revoked_at = now(), rotated_at = now()
 WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > now()
@@ -42,17 +68,30 @@ func (q *Queries) ConsumeRefreshToken(ctx context.Context, tokenHash []byte) (Id
 	return i, err
 }
 
+const countActiveAdmins = `-- name: CountActiveAdmins :one
+SELECT count(*)::bigint FROM identity.users WHERE role = 'admin' AND disabled_at IS NULL
+`
+
+func (q *Queries) CountActiveAdmins(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveAdmins)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const createUser = `-- name: CreateUser :exec
-INSERT INTO identity.users (id, email, password_hash, name, role)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO identity.users (id, email, password_hash, name, role, guest, email_verified_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
 
 type CreateUserParams struct {
-	ID           uuid.UUID
-	Email        string
-	PasswordHash string
-	Name         string
-	Role         string
+	ID              uuid.UUID
+	Email           string
+	PasswordHash    string
+	Name            string
+	Role            string
+	Guest           bool
+	EmailVerifiedAt *time.Time
 }
 
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) error {
@@ -62,6 +101,8 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) error {
 		arg.PasswordHash,
 		arg.Name,
 		arg.Role,
+		arg.Guest,
+		arg.EmailVerifiedAt,
 	)
 	return err
 }
@@ -80,13 +121,39 @@ func (q *Queries) DeleteAddress(ctx context.Context, arg DeleteAddressParams) er
 	return err
 }
 
-const getRefreshTokenByHash = `-- name: GetRefreshTokenByHash :one
-SELECT id, user_id, token_hash, expires_at, revoked_at, created_at, rotated_at FROM identity.refresh_tokens WHERE token_hash = $1
+const deleteUser = `-- name: DeleteUser :exec
+DELETE FROM identity.users WHERE id = $1
 `
 
-func (q *Queries) GetRefreshTokenByHash(ctx context.Context, tokenHash []byte) (IdentityRefreshToken, error) {
+func (q *Queries) DeleteUser(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, deleteUser, id)
+	return err
+}
+
+const getRefreshTokenByHash = `-- name: GetRefreshTokenByHash :one
+SELECT id, user_id, token_hash, expires_at, revoked_at, created_at, rotated_at,
+       (expires_at <= now())::boolean AS expired,
+       COALESCE(EXTRACT(EPOCH FROM (now() - rotated_at)), -1)::float8 AS rotated_age_secs -- -1: never rotated
+FROM identity.refresh_tokens WHERE token_hash = $1
+`
+
+type GetRefreshTokenByHashRow struct {
+	ID             uuid.UUID
+	UserID         uuid.UUID
+	TokenHash      []byte
+	ExpiresAt      time.Time
+	RevokedAt      *time.Time
+	CreatedAt      time.Time
+	RotatedAt      *time.Time
+	Expired        bool
+	RotatedAgeSecs float64
+}
+
+// Ages are computed here, with the database's own clock, so the reuse-detection grace window
+// never depends on the app and the database agreeing about the time.
+func (q *Queries) GetRefreshTokenByHash(ctx context.Context, tokenHash []byte) (GetRefreshTokenByHashRow, error) {
 	row := q.db.QueryRow(ctx, getRefreshTokenByHash, tokenHash)
-	var i IdentityRefreshToken
+	var i GetRefreshTokenByHashRow
 	err := row.Scan(
 		&i.ID,
 		&i.UserID,
@@ -95,12 +162,14 @@ func (q *Queries) GetRefreshTokenByHash(ctx context.Context, tokenHash []byte) (
 		&i.RevokedAt,
 		&i.CreatedAt,
 		&i.RotatedAt,
+		&i.Expired,
+		&i.RotatedAgeSecs,
 	)
 	return i, err
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, password_hash, name, role, created_at FROM identity.users WHERE lower(email) = lower($1)
+SELECT id, email, password_hash, name, role, created_at, email_verified_at, guest, disabled_at, cart_reminders FROM identity.users WHERE lower(email) = lower($1)
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, lower string) (IdentityUser, error) {
@@ -113,12 +182,16 @@ func (q *Queries) GetUserByEmail(ctx context.Context, lower string) (IdentityUse
 		&i.Name,
 		&i.Role,
 		&i.CreatedAt,
+		&i.EmailVerifiedAt,
+		&i.Guest,
+		&i.DisabledAt,
+		&i.CartReminders,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, email, password_hash, name, role, created_at FROM identity.users WHERE id = $1
+SELECT id, email, password_hash, name, role, created_at, email_verified_at, guest, disabled_at, cart_reminders FROM identity.users WHERE id = $1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (IdentityUser, error) {
@@ -131,8 +204,35 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (IdentityUser, 
 		&i.Name,
 		&i.Role,
 		&i.CreatedAt,
+		&i.EmailVerifiedAt,
+		&i.Guest,
+		&i.DisabledAt,
+		&i.CartReminders,
 	)
 	return i, err
+}
+
+const insertActionToken = `-- name: InsertActionToken :exec
+INSERT INTO identity.action_tokens (id, user_id, kind, token_hash, expires_at) VALUES ($1, $2, $3, $4, $5)
+`
+
+type InsertActionTokenParams struct {
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	Kind      string
+	TokenHash []byte
+	ExpiresAt time.Time
+}
+
+func (q *Queries) InsertActionToken(ctx context.Context, arg InsertActionTokenParams) error {
+	_, err := q.db.Exec(ctx, insertActionToken,
+		arg.ID,
+		arg.UserID,
+		arg.Kind,
+		arg.TokenHash,
+		arg.ExpiresAt,
+	)
+	return err
 }
 
 const insertAddress = `-- name: InsertAddress :exec
@@ -191,6 +291,20 @@ func (q *Queries) InsertRefreshToken(ctx context.Context, arg InsertRefreshToken
 	return err
 }
 
+const invalidateActionTokens = `-- name: InvalidateActionTokens :exec
+UPDATE identity.action_tokens SET used_at = now() WHERE user_id = $1 AND kind = $2 AND used_at IS NULL
+`
+
+type InvalidateActionTokensParams struct {
+	UserID uuid.UUID
+	Kind   string
+}
+
+func (q *Queries) InvalidateActionTokens(ctx context.Context, arg InvalidateActionTokensParams) error {
+	_, err := q.db.Exec(ctx, invalidateActionTokens, arg.UserID, arg.Kind)
+	return err
+}
+
 const listAddresses = `-- name: ListAddresses :many
 SELECT id, user_id, full_name, phone, line1, line2, city, postal_code, country, is_default, created_at FROM identity.addresses WHERE user_id = $1 ORDER BY is_default DESC, created_at
 `
@@ -227,6 +341,80 @@ func (q *Queries) ListAddresses(ctx context.Context, userID uuid.UUID) ([]Identi
 	return items, nil
 }
 
+const listUsers = `-- name: ListUsers :many
+SELECT id, email, password_hash, name, role, created_at, email_verified_at, guest, disabled_at, cart_reminders FROM identity.users
+WHERE ($1::text = '' OR email ILIKE $2::text OR name ILIKE $2::text)
+  AND ($3::text = '' OR role = $3::text)
+ORDER BY created_at DESC, id DESC
+LIMIT $5 OFFSET $4
+`
+
+type ListUsersParams struct {
+	Query       string
+	LikePattern string
+	Role        string
+	PageOffset  int32
+	PageLimit   int32
+}
+
+func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]IdentityUser, error) {
+	rows, err := q.db.Query(ctx, listUsers,
+		arg.Query,
+		arg.LikePattern,
+		arg.Role,
+		arg.PageOffset,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []IdentityUser
+	for rows.Next() {
+		var i IdentityUser
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.PasswordHash,
+			&i.Name,
+			&i.Role,
+			&i.CreatedAt,
+			&i.EmailVerifiedAt,
+			&i.Guest,
+			&i.DisabledAt,
+			&i.CartReminders,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markEmailVerified = `-- name: MarkEmailVerified :exec
+UPDATE identity.users SET email_verified_at = COALESCE(email_verified_at, now()) WHERE id = $1
+`
+
+func (q *Queries) MarkEmailVerified(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, markEmailVerified, id)
+	return err
+}
+
+const purgeActionTokens = `-- name: PurgeActionTokens :execrows
+DELETE FROM identity.action_tokens WHERE expires_at < $1 OR (used_at IS NOT NULL AND used_at < $1)
+`
+
+func (q *Queries) PurgeActionTokens(ctx context.Context, expiresAt time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, purgeActionTokens, expiresAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const purgeRefreshTokens = `-- name: PurgeRefreshTokens :execrows
 DELETE FROM identity.refresh_tokens
 WHERE expires_at < $1 OR (revoked_at IS NOT NULL AND revoked_at < $1)
@@ -258,5 +446,76 @@ WHERE token_hash = $1 AND revoked_at IS NULL
 
 func (q *Queries) RevokeRefreshToken(ctx context.Context, tokenHash []byte) error {
 	_, err := q.db.Exec(ctx, revokeRefreshToken, tokenHash)
+	return err
+}
+
+const setCartReminders = `-- name: SetCartReminders :exec
+UPDATE identity.users SET cart_reminders = $2 WHERE id = $1
+`
+
+type SetCartRemindersParams struct {
+	ID            uuid.UUID
+	CartReminders bool
+}
+
+func (q *Queries) SetCartReminders(ctx context.Context, arg SetCartRemindersParams) error {
+	_, err := q.db.Exec(ctx, setCartReminders, arg.ID, arg.CartReminders)
+	return err
+}
+
+const setPassword = `-- name: SetPassword :exec
+UPDATE identity.users SET password_hash = $2, guest = false WHERE id = $1
+`
+
+type SetPasswordParams struct {
+	ID           uuid.UUID
+	PasswordHash string
+}
+
+// Setting a password also proves control of the mailbox it was emailed to (reset) and ends guest status.
+func (q *Queries) SetPassword(ctx context.Context, arg SetPasswordParams) error {
+	_, err := q.db.Exec(ctx, setPassword, arg.ID, arg.PasswordHash)
+	return err
+}
+
+const setUserDisabled = `-- name: SetUserDisabled :exec
+UPDATE identity.users SET disabled_at = $2 WHERE id = $1
+`
+
+type SetUserDisabledParams struct {
+	ID         uuid.UUID
+	DisabledAt *time.Time
+}
+
+func (q *Queries) SetUserDisabled(ctx context.Context, arg SetUserDisabledParams) error {
+	_, err := q.db.Exec(ctx, setUserDisabled, arg.ID, arg.DisabledAt)
+	return err
+}
+
+const setUserRole = `-- name: SetUserRole :exec
+UPDATE identity.users SET role = $2 WHERE id = $1
+`
+
+type SetUserRoleParams struct {
+	ID   uuid.UUID
+	Role string
+}
+
+func (q *Queries) SetUserRole(ctx context.Context, arg SetUserRoleParams) error {
+	_, err := q.db.Exec(ctx, setUserRole, arg.ID, arg.Role)
+	return err
+}
+
+const updateUserName = `-- name: UpdateUserName :exec
+UPDATE identity.users SET name = $2 WHERE id = $1
+`
+
+type UpdateUserNameParams struct {
+	ID   uuid.UUID
+	Name string
+}
+
+func (q *Queries) UpdateUserName(ctx context.Context, arg UpdateUserNameParams) error {
+	_, err := q.db.Exec(ctx, updateUserName, arg.ID, arg.Name)
 	return err
 }

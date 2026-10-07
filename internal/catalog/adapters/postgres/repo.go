@@ -23,13 +23,13 @@ func (r *Repo) q(ctx context.Context) *sqlcgen.Queries { return sqlcgen.New(db.Q
 
 func toProduct(p sqlcgen.CatalogProduct) domain.Product {
 	return domain.Product{ID: p.ID, CategoryID: p.CategoryID, Slug: p.Slug, Name: p.Name, Description: p.Description,
-		PriceCents: p.PriceCents, Currency: p.Currency, ImageURL: p.ImageUrl, Active: p.Active, CreatedAt: p.CreatedAt,
+		PriceCents: p.PriceCents, Currency: p.Currency, ImageURL: p.ImageUrl, ThumbURL: p.ThumbUrl, Active: p.Active, CreatedAt: p.CreatedAt,
 		ArchivedAt: p.ArchivedAt, OptionName: p.OptionName}
 }
 
 func (r *Repo) List(ctx context.Context, f domain.Filter) ([]domain.Product, int, error) {
 	rows, err := r.q(ctx).ListProducts(ctx, sqlcgen.ListProductsParams{
-		LikePattern: likePattern(f.Query), Archived: f.Archived, IncludeInactive: f.IncludeInactive, Query: f.Query, CategorySlug: f.CategorySlug,
+		LikePattern: likePattern(f.Query), Sort: f.Sort, MinPrice: f.MinPriceCents, MaxPrice: f.MaxPriceCents, Archived: f.Archived, IncludeInactive: f.IncludeInactive, Query: f.Query, CategorySlug: f.CategorySlug,
 		PageLimit: int32(f.PerPage), PageOffset: int32((f.Page - 1) * f.PerPage),
 	})
 	if err != nil {
@@ -39,7 +39,7 @@ func (r *Repo) List(ctx context.Context, f domain.Filter) ([]domain.Product, int
 	total := 0
 	for i, p := range rows {
 		out[i] = domain.Product{ID: p.ID, CategoryID: p.CategoryID, Slug: p.Slug, Name: p.Name, Description: p.Description,
-			PriceCents: p.PriceCents, Currency: p.Currency, ImageURL: p.ImageUrl, Active: p.Active, CreatedAt: p.CreatedAt,
+			PriceCents: p.PriceCents, Currency: p.Currency, ImageURL: p.ImageUrl, ThumbURL: p.ThumbUrl, Active: p.Active, CreatedAt: p.CreatedAt,
 			ArchivedAt: p.ArchivedAt, OptionName: p.OptionName, MinPriceCents: p.MinPrice, MaxPriceCents: p.MaxPrice}
 		total = int(p.Total)
 	}
@@ -286,4 +286,113 @@ func (r *Repo) UpdateVariant(ctx context.Context, v domain.Variant) error {
 
 func (r *Repo) RenameVariant(ctx context.Context, id uuid.UUID, label string) error {
 	return mapUnique(r.q(ctx).RenameVariantLabel(ctx, sqlcgen.RenameVariantLabelParams{ID: id, Label: label}))
+}
+
+func toImage(i sqlcgen.CatalogProductImage) domain.Image {
+	return domain.Image{ID: i.ID, ProductID: i.ProductID, URL: i.Url, ThumbURL: i.ThumbUrl, Alt: i.Alt, Position: int(i.Position)}
+}
+
+func (r *Repo) ImagesByProducts(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID][]domain.Image, error) {
+	rows, err := r.q(ctx).ListImagesByProducts(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := map[uuid.UUID][]domain.Image{}
+	for _, i := range rows {
+		out[i.ProductID] = append(out[i.ProductID], toImage(i))
+	}
+	return out, nil
+}
+
+func (r *Repo) GetImage(ctx context.Context, productID, imageID uuid.UUID) (domain.Image, error) {
+	i, err := r.q(ctx).GetImage(ctx, sqlcgen.GetImageParams{ID: imageID, ProductID: productID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Image{}, domain.ErrImageNotFound
+	}
+	return toImage(i), err
+}
+
+// AddImage appends an image and refreshes the product's cover in one transaction.
+func (r *Repo) AddImage(ctx context.Context, img domain.Image) error {
+	return r.imageTx(ctx, img.ProductID, func(q *sqlcgen.Queries) error {
+		return q.InsertImage(ctx, sqlcgen.InsertImageParams{
+			ID: img.ID, ProductID: img.ProductID, Url: img.URL, ThumbUrl: img.ThumbURL, Alt: img.Alt, Position: int32(img.Position),
+		})
+	})
+}
+
+// RemoveImage deletes an image row and refreshes the cover; it reports how many
+// rows still reference the image's files, so the caller knows whether to delete them.
+func (r *Repo) RemoveImage(ctx context.Context, img domain.Image) (remainingRefs int, err error) {
+	err = r.imageTx(ctx, img.ProductID, func(q *sqlcgen.Queries) error { return q.DeleteImage(ctx, img.ID) })
+	if err != nil {
+		return 0, err
+	}
+	n, err := r.q(ctx).CountImageReferences(ctx, img.URL)
+	if err != nil {
+		return 0, err
+	}
+	m, err := r.q(ctx).CountImageReferences(ctx, img.ThumbURL)
+	return int(n + m), err
+}
+
+// ReorderImages stores the given order (ids) as positions 0..n-1.
+func (r *Repo) ReorderImages(ctx context.Context, productID uuid.UUID, ids []uuid.UUID) error {
+	return r.imageTx(ctx, productID, func(q *sqlcgen.Queries) error {
+		for pos, id := range ids {
+			if err := q.SetImagePosition(ctx, sqlcgen.SetImagePositionParams{ID: id, Position: int32(pos)}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// imageTx runs change and then points the product's cover at its first image (or clears it).
+func (r *Repo) imageTx(ctx context.Context, productID uuid.UUID, change func(q *sqlcgen.Queries) error) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	q := sqlcgen.New(tx)
+	if err := change(q); err != nil {
+		return err
+	}
+	imgs, err := q.ListImagesByProduct(ctx, productID)
+	if err != nil {
+		return err
+	}
+	cover, thumb := "", ""
+	if len(imgs) > 0 {
+		cover, thumb = imgs[0].Url, imgs[0].ThumbUrl
+	}
+	if err := q.SetProductCover(ctx, sqlcgen.SetProductCoverParams{ID: productID, ImageUrl: cover, ThumbUrl: thumb}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (r *Repo) Related(ctx context.Context, productID uuid.UUID, limit int) ([]domain.Product, error) {
+	rows, err := r.q(ctx).RelatedProducts(ctx, sqlcgen.RelatedProductsParams{ProductID: productID, MaxRows: int32(limit)})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.Product, len(rows))
+	for i, p := range rows {
+		out[i] = toProduct(p)
+	}
+	return out, nil
+}
+
+func (r *Repo) Sitemap(ctx context.Context) ([]domain.SitemapEntry, error) {
+	rows, err := r.q(ctx).SitemapProducts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.SitemapEntry, len(rows))
+	for i, x := range rows {
+		out[i] = domain.SitemapEntry{Slug: x.Slug, CreatedAt: x.CreatedAt}
+	}
+	return out, nil
 }

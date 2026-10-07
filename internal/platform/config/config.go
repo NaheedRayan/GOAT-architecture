@@ -4,6 +4,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
+	"net/mail"
 	"net/url"
 	"regexp"
 	"slices"
@@ -33,16 +35,46 @@ type Config struct {
 	AdminEmail    string `env:"ADMIN_EMAIL"`
 	AdminPassword string `env:"ADMIN_PASSWORD"`
 
+	SiteName string `env:"SITE_NAME" envDefault:"GOAT Store"`
+	// AbandonedCartHours: hours a signed-in customer's cart sits idle before one reminder email. 0 turns reminders off.
+	AbandonedCartHours int `env:"ABANDONED_CART_HOURS" envDefault:"24"`
+	// LowStockThreshold: variants at or below this many units appear as low stock in the admin and alert emails.
+	LowStockThreshold int    `env:"LOW_STOCK_THRESHOLD" envDefault:"5"`
+	MetricsToken      string `env:"METRICS_TOKEN"` // enables GET /metrics for Prometheus (Bearer token); unset = no endpoint
+	AlertEmail        string `env:"ALERT_EMAIL"`   // staff alerts: low stock, return requests
+
+	// Outgoing email. Without SMTP_ADDR emails are only written to the log (development).
+	MailFrom string `env:"MAIL_FROM" envDefault:"GOAT Store <no-reply@localhost>"`
+	SMTPAddr string `env:"SMTP_ADDR"` // host:port
+	SMTPUser string `env:"SMTP_USER"`
+	SMTPPass string `env:"SMTP_PASS"`
+	SMTPTLS  string `env:"SMTP_TLS" envDefault:"starttls"` // starttls | implicit | none
+
+	// UploadDir holds uploaded product images (a persistent volume in production).
+	UploadDir string `env:"UPLOAD_DIR" envDefault:"./data/uploads"`
+
 	Currency       string        `env:"CURRENCY" envDefault:"USD"`
 	ReservationTTL time.Duration `env:"RESERVATION_TTL" envDefault:"15m"`
 
 	WorkersEnabled bool `env:"WORKERS_ENABLED" envDefault:"true"`
 
+	// Store rules.
+	TaxRatePercent   float64 `env:"TAX_RATE_PERCENT" envDefault:"0"`  // e.g. 15 for 15%
+	TaxInclusive     bool    `env:"TAX_INCLUSIVE" envDefault:"false"` // true: shelf prices already include tax
+	TaxLabel         string  `env:"TAX_LABEL" envDefault:"Tax"`       // "VAT", "GST"...
+	ReturnWindowDays int     `env:"RETURN_WINDOW_DAYS" envDefault:"14"`
+	// PaymentMethods lists what shoppers can choose at checkout: card, cod (cash on delivery).
+	PaymentMethods []string `env:"PAYMENT_METHODS" envSeparator:"," envDefault:"card,cod"`
+
+	// PaymentProvider is the card gateway: "mock" (development only) or "none" (no card payments; requires PAYMENT_METHODS=cod).
 	PaymentProvider      string `env:"PAYMENT_PROVIDER" envDefault:"mock"`
 	PaymentWebhookSecret string `env:"PAYMENT_WEBHOOK_SECRET"`
 }
 
 func (c Config) Production() bool { return c.Env == "production" }
+
+// TaxRateBps is the tax rate in basis points (15% = 1500).
+func (c Config) TaxRateBps() int { return int(math.Round(c.TaxRatePercent * 100)) }
 
 func Load() (Config, error) {
 	cfg, err := env.ParseAs[Config]()
@@ -78,6 +110,28 @@ func (c Config) Validate() error {
 	if (c.AdminEmail == "") != (c.AdminPassword == "") {
 		add("set both ADMIN_EMAIL and ADMIN_PASSWORD, or neither")
 	}
+	if c.TaxRatePercent < 0 || c.TaxRatePercent > 100 {
+		add("TAX_RATE_PERCENT must be between 0 and 100 (got %v)", c.TaxRatePercent)
+	}
+	if c.ReturnWindowDays < 0 || c.ReturnWindowDays > 365 {
+		add("RETURN_WINDOW_DAYS must be between 0 and 365")
+	}
+	if len(c.PaymentMethods) == 0 {
+		add("PAYMENT_METHODS must list at least one of: card, cod")
+	}
+	for _, m := range c.PaymentMethods {
+		if m != "card" && m != "cod" {
+			add("PAYMENT_METHODS: unknown method %q (use card, cod)", m)
+		}
+	}
+	if c.PaymentProvider == "none" && slices.Contains(c.PaymentMethods, "card") {
+		add("PAYMENT_PROVIDER=none cannot offer card payments: set PAYMENT_METHODS=cod, or configure a card gateway")
+	}
+	if c.AlertEmail != "" {
+		if _, err := mail.ParseAddress(c.AlertEmail); err != nil {
+			add("ALERT_EMAIL is not a valid address (got %q)", c.AlertEmail)
+		}
+	}
 	if c.PublicURL != "" {
 		if u, err := url.Parse(c.PublicURL); err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
 			add("PUBLIC_URL must look like https://shop.example.com (got %q)", c.PublicURL)
@@ -93,6 +147,12 @@ func (c Config) Validate() error {
 		}
 		if c.JWTSeed == "" {
 			add("JWT_SEED is required in production (openssl rand -base64 32)")
+		}
+		if c.SMTPAddr == "" {
+			add("SMTP_ADDR is required in production: password resets and order emails cannot be delivered without it")
+		}
+		if c.PublicURL == "" {
+			add("PUBLIC_URL is required in production: it is used to build the links in emails")
 		}
 		if c.AdminPassword != "" && len(c.AdminPassword) < 12 {
 			add("ADMIN_PASSWORD must be at least 12 characters in production")

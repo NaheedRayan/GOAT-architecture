@@ -20,6 +20,7 @@ import (
 
 const (
 	RoleCustomer = "customer"
+	RoleStaff    = "staff"
 	RoleAdmin    = "admin"
 	issuer       = "goat"
 )
@@ -112,6 +113,22 @@ func Require(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// RequireAnyRole allows users holding any of the given roles (after Require).
+func RequireAnyRole(roles ...string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return Require(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			c, _ := FromContext(r.Context())
+			for _, role := range roles {
+				if c.Role == role {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+			http.Error(w, "forbidden", http.StatusForbidden)
+		}))
+	}
 }
 
 // RequireRole allows only users with the given role (after Require).

@@ -47,6 +47,20 @@ Every fixed item has a test, or a verified check where a test is not possible.
 
 - [x] **L1** gzip, HEAD, slash redirect · **L2** versioned assets · **L3** favicon, `X-Request-Id` echoed · **L4** `Dockerfile` (multi-stage, distroless, non-root) and GitHub Actions CI (vet, build, race tests on Postgres, generated-code-is-current check) · **L5** refresh rotation / reuse / logout tests · embedded `cmd/migrate`, so deploys need no external tooling.
 
+## Product-gap pass (storefront, checkout, operations)
+
+Built after a product-manager review of what a real shop needs. All have tests unless noted.
+
+- [x] Product **variants** (size/colour) with independent stock and price; **image gallery** upload (re-encoded, no SVG, pixel-bomb limits); admin **CSV import** (formula-injection safe).
+- [x] **Checkout engine**: shipping methods, coupons, tax (exclusive/inclusive), price-changed guard, **guest checkout**, **cash on delivery**, order timeline, tracking, **cancel / return / refund** flows with stock return.
+- [x] **Accounts**: email verification, password reset, profile, address book, **data export and account deletion** (every module erases its data via the `account.deleted` event).
+- [x] **Email** through the transactional outbox (payload redacted once sent), order notifications, **abandoned-cart reminders**, **low-stock and return alerts** to staff.
+- [x] **SEO**: sitemap, robots, canonical URLs, Open Graph, JSON-LD (Product + AggregateRating), safe Markdown **content pages** (admin-editable).
+- [x] **Reviews** (purchase-gated, moderated) and **wishlist**; related products; sort and price filters.
+- [x] **Admin**: audit log, users/roles (last-admin protected), stock correction, dashboards, review moderation.
+- [x] **Operations**: `/readyz`, `/metrics`, tested backup/restore, load-test tool, concurrent-checkout oversell test, staging compose, CI.
+- [~] Not built (needs your decision or credentials): card gateway, real legal text, SMS, loyalty, multi-currency, Bangla UI. See the README.
+
 ## Deliberately not changed
 
 - [~] **Failed payment cancels the order** (R16). A final failure event is terminal, which is correct for the mock. With a real gateway, declines are retried on the gateway's own page and only a final failure reaches us. Revisit when a gateway is chosen.
